@@ -5,63 +5,75 @@
 #include <stdio.h>
 #include <shlobj.h>
 
+#define APPLICATION_NAME L"GhidraLaunch"
+#define COMMANDLINE_FORMAT L"cmd.exe /c \"%s\""
+#define ERROR_FORMAT L"Failed to launch Ghidra!\nFatal Error: %d"
+#define GHIDRA_FILENAME L".\\ghidraRun.bat";
 #define VC_EXTRALEAN
 #define WIN32_LEAN_AND_MEAN
 
 // no need for a console window
-#pragma comment(linker, "/SUBSYSTEM:windows /ENTRY:WinMainCRTStartup")
+#pragma comment(linker, "/SUBSYSTEM:windows /ENTRY:wWinMainCRTStartup")
 
 // main entrypoint
-int APIENTRY WinMain(
+int APIENTRY wWinMain(
   _In_ HINSTANCE hInstance,
   _In_opt_ HINSTANCE hPrevInstance,
-  _In_ LPSTR lpCmdLine,
+  _In_ LPWSTR lpCmdLine,
   _In_ int nShowCmd
 ) {
-  STARTUPINFOA lpStartupInfo;
+  STARTUPINFO lpStartupInfo;
   PROCESS_INFORMATION lpProcessInfo;
 
-  const wchar_t* wAppDataPath = NULL;
-  char* cCommandLine = malloc(1024);
-  char* cAppDataPath = malloc(1024);
-  const char* const cApplicationName = "GhidraLaunch";
-  const char* const cCommandLineFormat = "cmd.exe /c \"%s\\%s\"";
-  const char* const cErrorFormat = "Failed to launch Ghidra!\nFatal Error: %d";
-  const char* const cGhidraFilename = "Ghidra\\ghidraRun.bat";
-
-  size_t len = 0;
+  WCHAR* wCommandLine = malloc(1024);
+  const WCHAR* const wApplicationName = APPLICATION_NAME;
+  const WCHAR* const wCommandLineFormat = COMMANDLINE_FORMAT;
+  const WCHAR* const wErrorFormat = ERROR_FORMAT;
+  const WCHAR* const wGhidraFilename = GHIDRA_FILENAME;
   int returnCode = EXIT_FAILURE;
 
   // clear STARTUPINFO struct
-  ZeroMemory(&lpStartupInfo, sizeof(STARTUPINFOA));
+  ZeroMemory(&lpStartupInfo, sizeof(STARTUPINFO));
 
   // clear PROCESS_INFORMATION struct
   ZeroMemory(&lpProcessInfo, sizeof(PROCESS_INFORMATION));
 
   // populate STARTUPINFO struct making sure there is no console window
-  lpStartupInfo.cb = sizeof(STARTUPINFOA);
+  lpStartupInfo.cb = sizeof(STARTUPINFO);
   lpStartupInfo.dwFlags = STARTF_USESHOWWINDOW;
   lpStartupInfo.wShowWindow = SW_HIDE;
 
-  // get %AppData%\Roaming PATH
-  if (SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, (PWSTR*)&wAppDataPath) != S_OK) {
-    goto done;
-  }
-
-  // convert unicode to ascii
-  wcstombs_s(&len, cAppDataPath, 1024, wAppDataPath, 1023);
-
   // concatenate command line
-  if (_snprintf_s(cCommandLine, 1024, 1023, cCommandLineFormat, cAppDataPath, cGhidraFilename) < S_OK) {
+  if (_snwprintf_s(
+    wCommandLine,
+    512,
+    510,
+    wCommandLineFormat,
+    wGhidraFilename
+  ) < S_OK) {
     goto done;
   }
 
   // create process
-  if (CreateProcessA(NULL, (LPSTR)cCommandLine, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &lpStartupInfo, &lpProcessInfo)) {
+  if (CreateProcess(
+    NULL,
+    (LPWSTR)wCommandLine,
+    NULL,
+    NULL,
+    FALSE,
+    CREATE_NO_WINDOW,
+    NULL,
+    NULL,
+    &lpStartupInfo,
+    &lpProcessInfo
+  )) {
     DWORD dwError = 0;
 
     // wait for child to infinity and beyond
-    if (dwError = WaitForSingleObject(lpProcessInfo.hProcess, INFINITE) != WAIT_OBJECT_0) {
+    if (dwError = WaitForSingleObject(
+      lpProcessInfo.hProcess,
+      INFINITE
+    ) != WAIT_OBJECT_0) {
       // terminate child process
       TerminateProcess(lpProcessInfo.hProcess, dwError);
       // store error code
@@ -77,21 +89,29 @@ int APIENTRY WinMain(
   }
 
 done:
-  // free task memory allocated by SHGetKnownFolderPath
-  CoTaskMemFree((LPVOID)wAppDataPath);
-
   if (returnCode != EXIT_SUCCESS) {
     // allocate memory for error message
-    char* cErrorMessage = malloc(1024);
+    WCHAR* wErrorMessage = malloc(1024);
 
     // concatenate error message
-    _snprintf_s(cErrorMessage, 1024, 1024, cErrorFormat, GetLastError());
+    _snwprintf_s(
+      wErrorMessage,
+      512,
+      510,
+      wErrorFormat,
+      GetLastError()
+    );
 
     // display message box with error message
-    MessageBoxA(NULL, cErrorMessage, cApplicationName, MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND);
+    MessageBox(
+      NULL,
+      wErrorMessage,
+      wApplicationName,
+      MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND
+    );
 
     // free error message
-    free(cErrorMessage);
+    free(wErrorMessage);
   }
 
   // close PROCESS_INFORMATION handles
@@ -99,8 +119,7 @@ done:
   CloseHandle(lpProcessInfo.hProcess);
 
   // free memory malloc'd
-  free(cAppDataPath);
-  free(cCommandLine); // give me freedom or give me ...
+  free(wCommandLine); // give me freedom or give me ...
 
   return returnCode; // death ...
 }
