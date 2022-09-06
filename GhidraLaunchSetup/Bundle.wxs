@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- START OF DEFINITIONS -->
+<!-- The path to Resources files -->
+<?define ResourcePath = "..\Resources" ?>
+<!-- The name of the application -->
+<?define Name = "Ghidra Launch" ?>
+<!-- The Description of the application -->
+<?define Description = "Launch Ghidra software reverse engineering (SRE) framework by this pretty icon." ?>
+<!-- The manufacturer, for setup of package publisher and folder info -->
+<?define Manufacturer = "Ghidra" ?>
+<!-- The version number of this setup package -->
+<?define Version = "0.0.0.1" ?>
+<!-- The copyright -->
+<?define Copyright = "🄯 CC0 2022 No rights reserved." ?>
+<!-- The help url -->
+<?define HelpUrl = "https://htmlpreview.github.io/?https://github.com/NationalSecurityAgency/ghidra/blob/stable/GhidraDocs/InstallationGuide.html" ?>
+<!-- The about url -->
+<?define AboutUrl = "https://www.ghidra-sre.org/" ?>
+<!-- The update url -->
+<?define UpdateUrl = "https://github.com/NationalSecurityAgency/ghidra/releases" ?>
+<!-- UpgradeCode must be unique and not changed once the first version of the program is installed. -->
+<?define UpgradeCode = "{DFE05126-B29E-4298-A06B-63F833BC0BF8}" ?>
+<!-- The Icon -->
+<?define Icon = "$(var.ResourcePath)\Ghidra.ico" ?>
+<!-- The Logo -->
+<?define Logo = "$(var.ResourcePath)\Logo.png" ?>
+<!-- The LogoSide -->
+<?define LogoSide = "$(var.ResourcePath)\LogoSide.png" ?>
+<!-- The Splash Screen image -->
+<?define SplashScreen = "$(var.ResourcePath)\Splash.bmp" ?>
+<!-- The License -->
+<?define LicenseFile = "$(var.ResourcePath)\LICENSE.rtf" ?>
+<!-- END OF DEFINITIONS -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:bal="http://schemas.microsoft.com/wix/BalExtension"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <?define Java_TargetDir=".."?>
+  <?define GhidraLaunchInstaller_TargetDir=$(var.GhidraLaunchInstaller.TargetDir)?>
+  <Bundle Name="$(var.Name)" 
+          Manufacturer="$(var.Manufacturer)"
+          Version="$(var.Version)"
+          AboutUrl="$(var.AboutUrl)"
+          HelpUrl="$(var.HelpUrl)"
+          Copyright="$(var.Copyright)"
+          IconSourceFile="$(var.Icon)"
+          SplashScreenSourceFile="$(var.SplashScreen)"
+          UpgradeCode="$(var.UpgradeCode)"
+          UpdateUrl="$(var.UpdateUrl)"
+          Condition="VersionNT >= v6.3 AND VersionNT64 >= v6.3">
+  <!-- <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.RtfLicense">
+      <bal:WixStandardBootstrapperApplication
+	      LicenseFile="$(var.LicenseFile)"
+        LogoFile="$(var.Logo)"
+        SuppressOptionsUI="yes"
+        SuppressRepair="yes" />
+  </BootstrapperApplicationRef>
+  -->
+  <!-- 
+    <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkLicense">
+      <bal:WixStandardBootstrapperApplication
+        LicenseUrl=""
+        LogoFile="$(var.Logo)"
+        ShowVersion="yes"
+        SuppressOptionsUI="yes"
+        SuppressRepair="yes" />
+  </BootstrapperApplicationRef>
+  -->
+  <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkSidebarLicense">
+      <bal:WixStandardBootstrapperApplication
+        LicenseUrl=""
+        LogoFile="$(var.Logo)"
+        LogoSideFile="$(var.LogoSide)"
+        ShowVersion="no"
+        SuppressOptionsUI="no"
+        SuppressRepair="yes" />
+  </BootstrapperApplicationRef>
+  <Chain>
+      <!-- Java -->
+      <MsiPackage DisplayName="OpenJDK 17.0.4.1"
+                  SourceFile="$(var.Java_TargetDir)\OpenJDK17U-jdk_x64.msi"
+                  Compressed="yes"
+                  Vital="yes" />
+      <!-- GhidraLaunchInstaller.msi -->
+      <MsiPackage DisplayName="$(var.Name)"
+                  SourceFile="$(var.GhidraLaunchInstaller_TargetDir)\GhidraLaunchInstaller.msi"
+                  Compressed="yes"
+                  Vital="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

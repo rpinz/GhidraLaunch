@@ -3,29 +3,46 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.1.32228.430
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GhidraLaunch", "GhidraLaunch.vcxproj", "{671351BD-21DE-45FC-813C-9644A41FE38F}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GhidraLaunchC", "GhidraLaunchC\GhidraLaunchC.vcxproj", "{671351BD-21DE-45FC-813C-9644A41FE38F}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GhidraLaunchRS", "GhidraLaunchRS\GhidraLaunchRS.vcxproj", "{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}"
+EndProject
+Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchInstaller", "GhidraLaunchInstaller\GhidraLaunchInstaller.wixproj", "{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}"
+	ProjectSection(ProjectDependencies) = postProject
+		{671351BD-21DE-45FC-813C-9644A41FE38F} = {671351BD-21DE-45FC-813C-9644A41FE38F}
+		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA} = {8C9574AD-B813-4823-A1A5-5D01EAA45DEA}
+	EndProjectSection
+EndProject
+Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchSetup", "GhidraLaunchSetup\GhidraLaunchSetup.wixproj", "{54D4ADC7-1FFC-4207-9152-50FE58F28D7F}"
+	ProjectSection(ProjectDependencies) = postProject
+		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE} = {FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
-		Debug|x86 = Debug|x86
 		Release|x64 = Release|x64
-		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{671351BD-21DE-45FC-813C-9644A41FE38F}.Debug|x64.ActiveCfg = Debug|x64
 		{671351BD-21DE-45FC-813C-9644A41FE38F}.Debug|x64.Build.0 = Debug|x64
-		{671351BD-21DE-45FC-813C-9644A41FE38F}.Debug|x86.ActiveCfg = Debug|Win32
-		{671351BD-21DE-45FC-813C-9644A41FE38F}.Debug|x86.Build.0 = Debug|Win32
 		{671351BD-21DE-45FC-813C-9644A41FE38F}.Release|x64.ActiveCfg = Release|x64
 		{671351BD-21DE-45FC-813C-9644A41FE38F}.Release|x64.Build.0 = Release|x64
-		{671351BD-21DE-45FC-813C-9644A41FE38F}.Release|x86.ActiveCfg = Release|Win32
-		{671351BD-21DE-45FC-813C-9644A41FE38F}.Release|x86.Build.0 = Release|Win32
+		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}.Debug|x64.ActiveCfg = Debug|x64
+		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}.Debug|x64.Build.0 = Debug|x64
+		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}.Release|x64.ActiveCfg = Release|x64
+		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}.Release|x64.Build.0 = Release|x64
+		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}.Debug|x64.ActiveCfg = Debug|x86
+		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}.Release|x64.ActiveCfg = Release|x86
+		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}.Release|x64.Build.0 = Release|x86
+		{54D4ADC7-1FFC-4207-9152-50FE58F28D7F}.Debug|x64.ActiveCfg = Debug|x86
+		{54D4ADC7-1FFC-4207-9152-50FE58F28D7F}.Release|x64.ActiveCfg = Release|x86
+		{54D4ADC7-1FFC-4207-9152-50FE58F28D7F}.Release|x64.Build.0 = Release|x86
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
-		SolutionGuid = {92FC586D-9A97-45A9-BDF8-B08251BCC08D}
+		SolutionGuid = {3ADC2EC8-47D2-4601-AAFD-470BD1E2816F}
 	EndGlobalSection
 EndGlobal

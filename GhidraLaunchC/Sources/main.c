@@ -1,9 +1,8 @@
-// GhidraLaunch.c : Launch Ghidra ghidraRun.bat
+// main.c : Launch Ghidra ghidraRun.bat
 //
 
 #include <windows.h>
 #include <stdio.h>
-#include <shlobj.h>
 
 #define APPLICATION_NAME L"GhidraLaunch"
 #define COMMANDLINE_FORMAT L"cmd.exe /c \"%s\""

@@ -1,0 +1,25 @@
+[package]
+name = "ghidra_launch"
+version = "0.0.1"
+edition = "2021"
+build = "build.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
+
+[build-dependencies]
+embed-resource = "1.7.3"
+
+[dependencies.windows-sys]
+version = "0.36.1"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+]
