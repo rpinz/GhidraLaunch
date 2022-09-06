@@ -3,11 +3,11 @@
 
 #include <windows.h>
 #include <stdio.h>
+#include <wchar.h>
 
-#define APPLICATION_NAME L"GhidraLaunch"
-#define COMMANDLINE_FORMAT L"cmd.exe /c \"%s\""
-#define ERROR_FORMAT L"Failed to launch Ghidra!\nFatal Error: %d"
-#define GHIDRA_FILENAME L".\\ghidraRun.bat";
+#define APPLICATION_NAME L"GhidraLaunch\0"
+#define COMMANDLINE L"cmd.exe /c .\\ghidraRun.bat\0"
+#define ERROR_FORMAT L"Failed to launch Ghidra!\nFatal Error: %d\0"
 #define VC_EXTRALEAN
 #define WIN32_LEAN_AND_MEAN
 
@@ -21,40 +21,35 @@ int APIENTRY wWinMain(
   _In_ LPWSTR lpCmdLine,
   _In_ int nShowCmd
 ) {
-  STARTUPINFO lpStartupInfo;
+  STARTUPINFOW lpStartupInfo;
   PROCESS_INFORMATION lpProcessInfo;
 
   WCHAR* wCommandLine = malloc(1024);
+  const WCHAR* const wCommandLineString = COMMANDLINE;
   const WCHAR* const wApplicationName = APPLICATION_NAME;
-  const WCHAR* const wCommandLineFormat = COMMANDLINE_FORMAT;
   const WCHAR* const wErrorFormat = ERROR_FORMAT;
-  const WCHAR* const wGhidraFilename = GHIDRA_FILENAME;
   int returnCode = EXIT_FAILURE;
 
   // clear STARTUPINFO struct
-  ZeroMemory(&lpStartupInfo, sizeof(STARTUPINFO));
+  ZeroMemory(&lpStartupInfo, sizeof(STARTUPINFOW));
 
   // clear PROCESS_INFORMATION struct
   ZeroMemory(&lpProcessInfo, sizeof(PROCESS_INFORMATION));
 
   // populate STARTUPINFO struct making sure there is no console window
-  lpStartupInfo.cb = sizeof(STARTUPINFO);
+  lpStartupInfo.cb = sizeof(STARTUPINFOW);
   lpStartupInfo.dwFlags = STARTF_USESHOWWINDOW;
   lpStartupInfo.wShowWindow = SW_HIDE;
 
-  // concatenate command line
-  if (_snwprintf_s(
-    wCommandLine,
-    512,
-    510,
-    wCommandLineFormat,
-    wGhidraFilename
-  ) < S_OK) {
+  // prepare commandline
+  if (wCommandLine != NULL) {
+    wCommandLine = wmemcpy(wCommandLine, wCommandLineString, sizeof(COMMANDLINE)*2);
+  } else {
     goto done;
   }
 
   // create process
-  if (CreateProcess(
+  if (CreateProcessW(
     NULL,
     (LPWSTR)wCommandLine,
     NULL,
@@ -66,7 +61,7 @@ int APIENTRY wWinMain(
     &lpStartupInfo,
     &lpProcessInfo
   )) {
-    DWORD dwError = 0;
+    DWORD dwError = EXIT_FAILURE;
 
     // wait for child to infinity and beyond
     if (dwError = WaitForSingleObject(
@@ -102,23 +97,22 @@ done:
     );
 
     // display message box with error message
-    MessageBox(
+    MessageBoxW(
       NULL,
       wErrorMessage,
       wApplicationName,
       MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND
     );
 
-    // free error message
-    free(wErrorMessage);
+    free(wErrorMessage); // give me freedom or give me ...
   }
 
-  // close PROCESS_INFORMATION handles
-  CloseHandle(lpProcessInfo.hThread);
-  CloseHandle(lpProcessInfo.hProcess);
-
-  // free memory malloc'd
-  free(wCommandLine); // give me freedom or give me ...
+  if (!CloseHandle(lpProcessInfo.hThread)) {
+    MessageBeep(MB_ICONERROR);
+  }
+  if (!CloseHandle(lpProcessInfo.hProcess)) {
+    MessageBeep(MB_ICONERROR);
+  }
 
   return returnCode; // death ...
 }
