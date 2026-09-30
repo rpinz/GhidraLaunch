@@ -71,19 +71,25 @@ fn system_directory() -> io::Result<PathBuf> {
 
 // launch ghidraRun.bat and return the exit code
 fn launch() -> i32 {
-    // directory containing this launcher, ghidraRun.bat lives next to it
+    // use GHIDRA_HOME when set, otherwise look next to the launcher
     let executable = match env::current_exe() {
         Ok(executable) => executable,
         Err(error) => return fail("Unable to locate the launcher, error", error),
     };
     let directory = match executable.parent() {
-        Some(directory) => directory,
+        Some(directory) => env::var_os("GHIDRA_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| directory.to_path_buf()),
         None => return fail("Unable to locate the launcher, error", io::Error::from_raw_os_error(ERROR_BAD_PATHNAME)),
     };
 
     // make sure ghidraRun.bat exists before starting anything
     if !directory.join(BATCH_FILE).is_file() {
-        return fail("ghidraRun.bat not found next to the launcher, error", io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND));
+        return fail(
+            "ghidraRun.bat not found in GHIDRA_HOME or next to the launcher, error",
+            io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND),
+        );
     }
 
     // absolute path to cmd.exe, never resolved through the search path
@@ -122,7 +128,7 @@ fn launch() -> i32 {
     }
     let status = command
         .raw_arg(arguments)
-        .current_dir(directory)
+        .current_dir(&directory)
         .creation_flags(CREATE_NO_WINDOW)
         .status();
 

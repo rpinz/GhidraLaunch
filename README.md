@@ -2,6 +2,29 @@
 
 Windows launchers for `ghidraRun.bat`, with a WiX installer and setup bundle.
 
+## Install and launch
+
+Ghidra is a **separate prerequisite**: the setup bundle installs Temurin and
+the launchers, **not Ghidra**. Download a Ghidra release from
+[the official releases](https://github.com/NationalSecurityAgency/ghidra/releases)
+and extract it to a permanent location. Set the user environment variable
+`GHIDRA_HOME` to the extracted directory **containing `ghidraRun.bat`** (for
+example, `C:\Tools\ghidra_11.4_PUBLIC`, not its parent directory). From
+PowerShell, substitute your actual extracted directory:
+
+```powershell
+[Environment]::SetEnvironmentVariable('GHIDRA_HOME', 'C:\Tools\ghidra_11.4_PUBLIC', 'User')
+$env:GHIDRA_HOME = 'C:\Tools\ghidra_11.4_PUBLIC'
+```
+
+Run the setup bundle, then start Ghidra Launch from the Start menu or desktop.
+Sign out and back in after setting the user variable so shortcuts started by
+Explorer inherit it (the second PowerShell command only affects that shell).
+Both launchers use `GHIDRA_HOME` when set; if it is unset or empty they instead
+look for `ghidraRun.bat` next to the launcher executable. The MSI installs only
+the launchers in Local AppData, so this fallback does not apply to a fresh MSI
+installation. If you move Ghidra, update `GHIDRA_HOME` accordingly.
+
 ## Build
 
 Use Visual Studio 2022 with the Desktop development with C++ workload, the
@@ -13,7 +36,9 @@ launcher.
 
 The installer projects additionally require WiX Toolset v3.11 or newer v3
 build tools. Run `download.sh` from a shell with Bash, curl, jq, and unzip to
-obtain the Ghidra and Temurin files needed by the setup bundle. The CI workflow
+obtain the Ghidra release (to determine the required Java version) and Temurin
+files needed to build the setup bundle; downloading Ghidra does not install it
+for setup users. The CI workflow
 builds and rebuilds the launchers on Windows in both configurations; it does
 not assemble the installer or download third-party binaries.
 
