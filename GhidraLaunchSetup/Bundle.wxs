@@ -31,6 +31,7 @@
 <!-- The License -->
 <?define LicenseFile = "$(var.ResourcePath)\LICENSE.rtf" ?>
 <!-- END OF DEFINITIONS -->
+<?include Versions.wxi ?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
      xmlns:bal="http://schemas.microsoft.com/wix/BalExtension"
      xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
@@ -76,8 +77,8 @@
   </BootstrapperApplicationRef>
   <Chain>
       <!-- Java -->
-      <MsiPackage DisplayName="OpenJDK 17.0.4.1"
-                  SourceFile="$(var.Java_TargetDir)\OpenJDK17U-jdk_x64.msi"
+      <MsiPackage DisplayName="Eclipse Temurin OpenJDK $(var.JavaVersion)"
+                  SourceFile="$(var.Java_TargetDir)\OpenJDK$(var.JavaVersion)U-jdk_x64.msi"
                   Compressed="yes"
                   Vital="yes" />
       <!-- GhidraLaunchInstaller.msi -->
