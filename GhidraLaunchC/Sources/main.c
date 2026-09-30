@@ -41,6 +41,7 @@ int APIENTRY wWinMain(
   _In_ int nShowCmd
 ) {
   static WCHAR wDirectory[PATH_SIZE];
+  static WCHAR wGhidraDirectory[PATH_SIZE];
   static WCHAR wApplicationName[PATH_SIZE];
   static WCHAR wCommandLine[PATH_SIZE];
   STARTUPINFOW lpStartupInfo;
@@ -67,13 +68,25 @@ int APIENTRY wWinMain(
   }
   *wSeparator = L'\0';
 
+  // use an existing Ghidra installation when configured
+  dwLength = GetEnvironmentVariableW(L"GHIDRA_HOME", wGhidraDirectory, _countof(wGhidraDirectory));
+  if (dwLength >= _countof(wGhidraDirectory)) {
+    ShowError(L"GHIDRA_HOME path is too long, error", ERROR_FILENAME_EXCED_RANGE);
+    return EXIT_FAILURE;
+  }
+  if (dwLength != 0 && wcscpy_s(wDirectory, _countof(wDirectory), wGhidraDirectory) != 0) {
+    ShowError(L"Unable to use GHIDRA_HOME, error", ERROR_FILENAME_EXCED_RANGE);
+    return EXIT_FAILURE;
+  }
+
   // make sure ghidraRun.bat exists before starting anything
   if (swprintf_s(wCommandLine, _countof(wCommandLine), L"%ls\\%ls", wDirectory, BATCH_FILE) < 0) {
     ShowError(L"Unable to locate ghidraRun.bat, error", ERROR_FILENAME_EXCED_RANGE);
     return EXIT_FAILURE;
   }
-  if (GetFileAttributesW(wCommandLine) == INVALID_FILE_ATTRIBUTES) {
-    ShowError(L"ghidraRun.bat not found next to the launcher, error", GetLastError());
+  dwLength = GetFileAttributesW(wCommandLine);
+  if (dwLength == INVALID_FILE_ATTRIBUTES || (dwLength & FILE_ATTRIBUTE_DIRECTORY)) {
+    ShowError(L"ghidraRun.bat not found in GHIDRA_HOME or next to the launcher, error", ERROR_FILE_NOT_FOUND);
     return EXIT_FAILURE;
   }
 
