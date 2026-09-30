@@ -1,18 +1,37 @@
 // main.c : Launch Ghidra ghidraRun.bat
 //
 
-#include <windows.h>
-#include <stdio.h>
-#include <wchar.h>
-
-#define APPLICATION_NAME L"GhidraLaunch\0"
-#define COMMANDLINE L"cmd.exe /c .\\ghidraRun.bat\0"
-#define ERROR_FORMAT L"Failed to launch Ghidra!\nFatal Error: %d\0"
 #define VC_EXTRALEAN
 #define WIN32_LEAN_AND_MEAN
 
+#include <windows.h>
+#include <stdlib.h>
+#include <wchar.h>
+
+#define APPLICATION_NAME L"GhidraLaunch"
+#define BATCH_FILE L"ghidraRun.bat"
+#define ERROR_FORMAT L"Failed to launch Ghidra!\n%ls %lu"
+#define PATH_SIZE 32768
+
 // no need for a console window
 #pragma comment(linker, "/SUBSYSTEM:windows /ENTRY:wWinMainCRTStartup")
+
+// display message box with error message
+static void ShowError(const WCHAR* const wMessage, const DWORD dwCode) {
+  WCHAR wErrorMessage[1024];
+
+  if (swprintf_s(wErrorMessage, _countof(wErrorMessage), ERROR_FORMAT, wMessage, dwCode) < 0) {
+    MessageBeep(MB_ICONERROR);
+    return;
+  }
+
+  MessageBoxW(
+    NULL,
+    wErrorMessage,
+    APPLICATION_NAME,
+    MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND
+  );
+}
 
 // main entrypoint
 int APIENTRY wWinMain(
@@ -21,14 +40,59 @@ int APIENTRY wWinMain(
   _In_ LPWSTR lpCmdLine,
   _In_ int nShowCmd
 ) {
+  static WCHAR wDirectory[PATH_SIZE];
+  static WCHAR wApplicationName[PATH_SIZE];
+  static WCHAR wCommandLine[PATH_SIZE];
   STARTUPINFOW lpStartupInfo;
   PROCESS_INFORMATION lpProcessInfo;
+  WCHAR* wSeparator;
+  DWORD dwLength;
+  DWORD dwExitCode = EXIT_FAILURE;
 
-  WCHAR* wCommandLine = malloc(1024);
-  const WCHAR* const wCommandLineString = COMMANDLINE;
-  const WCHAR* const wApplicationName = APPLICATION_NAME;
-  const WCHAR* const wErrorFormat = ERROR_FORMAT;
-  int returnCode = EXIT_FAILURE;
+  UNREFERENCED_PARAMETER(hInstance);
+  UNREFERENCED_PARAMETER(hPrevInstance);
+  UNREFERENCED_PARAMETER(lpCmdLine);
+  UNREFERENCED_PARAMETER(nShowCmd);
+
+  // directory containing this launcher, ghidraRun.bat lives next to it
+  dwLength = GetModuleFileNameW(NULL, wDirectory, _countof(wDirectory));
+  if (dwLength == 0 || dwLength >= _countof(wDirectory)) {
+    ShowError(L"Unable to locate the launcher, error", GetLastError());
+    return EXIT_FAILURE;
+  }
+  wSeparator = wcsrchr(wDirectory, L'\\');
+  if (wSeparator == NULL) {
+    ShowError(L"Unable to locate the launcher, error", ERROR_BAD_PATHNAME);
+    return EXIT_FAILURE;
+  }
+  *wSeparator = L'\0';
+
+  // make sure ghidraRun.bat exists before starting anything
+  if (swprintf_s(wCommandLine, _countof(wCommandLine), L"%ls\\%ls", wDirectory, BATCH_FILE) < 0) {
+    ShowError(L"Unable to locate ghidraRun.bat, error", ERROR_FILENAME_EXCED_RANGE);
+    return EXIT_FAILURE;
+  }
+  if (GetFileAttributesW(wCommandLine) == INVALID_FILE_ATTRIBUTES) {
+    ShowError(L"ghidraRun.bat not found next to the launcher, error", GetLastError());
+    return EXIT_FAILURE;
+  }
+
+  // absolute path to cmd.exe, never resolved through the search path
+  dwLength = GetSystemDirectoryW(wApplicationName, _countof(wApplicationName));
+  if (dwLength == 0 || dwLength >= _countof(wApplicationName)) {
+    ShowError(L"Unable to locate cmd.exe, error", GetLastError());
+    return EXIT_FAILURE;
+  }
+  if (wcscat_s(wApplicationName, _countof(wApplicationName), L"\\cmd.exe") != 0) {
+    ShowError(L"Unable to locate cmd.exe, error", ERROR_FILENAME_EXCED_RANGE);
+    return EXIT_FAILURE;
+  }
+
+  // prepare commandline, /d skips cmd.exe AutoRun commands
+  if (swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c .\\%ls", wApplicationName, BATCH_FILE) < 0) {
+    ShowError(L"Unable to prepare the command line, error", ERROR_FILENAME_EXCED_RANGE);
+    return EXIT_FAILURE;
+  }
 
   // clear STARTUPINFO struct
   ZeroMemory(&lpStartupInfo, sizeof(STARTUPINFOW));
@@ -41,79 +105,50 @@ int APIENTRY wWinMain(
   lpStartupInfo.dwFlags = STARTF_USESHOWWINDOW;
   lpStartupInfo.wShowWindow = SW_HIDE;
 
-  // prepare commandline
-  if (wCommandLine != NULL) {
-    wCommandLine = wmemcpy(wCommandLine, wCommandLineString, sizeof(COMMANDLINE)*2);
-  } else {
-    goto done;
-  }
-
   // create process
-  if (CreateProcessW(
-    NULL,
-    (LPWSTR)wCommandLine,
+  if (!CreateProcessW(
+    wApplicationName,
+    wCommandLine,
     NULL,
     NULL,
     FALSE,
     CREATE_NO_WINDOW,
     NULL,
-    NULL,
+    wDirectory,
     &lpStartupInfo,
     &lpProcessInfo
   )) {
-    DWORD dwError = EXIT_FAILURE;
-
-    // wait for child to infinity and beyond
-    if (dwError = WaitForSingleObject(
-      lpProcessInfo.hProcess,
-      INFINITE
-    ) != WAIT_OBJECT_0) {
-      // terminate child process
-      TerminateProcess(lpProcessInfo.hProcess, dwError);
-      // store error code
-      returnCode = dwError;
-      // bail out
-      goto done;
-    }
-
-    // get child exit code
-    if (GetExitCodeProcess(lpProcessInfo.hProcess, &dwError)) {
-      returnCode = dwError;
-    }
+    ShowError(L"Unable to start cmd.exe, error", GetLastError());
+    return EXIT_FAILURE;
   }
 
-done:
-  if (returnCode != EXIT_SUCCESS) {
-    // allocate memory for error message
-    WCHAR* wErrorMessage = malloc(1024);
+  CloseHandle(lpProcessInfo.hThread);
 
-    // concatenate error message
-    _snwprintf_s(
-      wErrorMessage,
-      512,
-      510,
-      wErrorFormat,
-      GetLastError()
-    );
+  // wait for child to infinity and beyond
+  if (WaitForSingleObject(lpProcessInfo.hProcess, INFINITE) != WAIT_OBJECT_0) {
+    const DWORD dwError = GetLastError();
 
-    // display message box with error message
-    MessageBoxW(
-      NULL,
-      wErrorMessage,
-      wApplicationName,
-      MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND
-    );
-
-    free(wErrorMessage); // give me freedom or give me ...
+    // terminate child process
+    TerminateProcess(lpProcessInfo.hProcess, EXIT_FAILURE);
+    CloseHandle(lpProcessInfo.hProcess);
+    ShowError(L"Unable to wait for ghidraRun.bat, error", dwError);
+    return EXIT_FAILURE;
   }
 
-  if (!CloseHandle(lpProcessInfo.hThread)) {
-    MessageBeep(MB_ICONERROR);
-  }
-  if (!CloseHandle(lpProcessInfo.hProcess)) {
-    MessageBeep(MB_ICONERROR);
+  // get child exit code
+  if (!GetExitCodeProcess(lpProcessInfo.hProcess, &dwExitCode)) {
+    const DWORD dwError = GetLastError();
+
+    CloseHandle(lpProcessInfo.hProcess);
+    ShowError(L"Unable to read the ghidraRun.bat exit code, error", dwError);
+    return EXIT_FAILURE;
   }
 
-  return returnCode; // death ...
+  CloseHandle(lpProcessInfo.hProcess);
+
+  if (dwExitCode != EXIT_SUCCESS) {
+    ShowError(L"ghidraRun.bat exited with code", dwExitCode);
+  }
+
+  return (int)dwExitCode; // death ...
 }
-

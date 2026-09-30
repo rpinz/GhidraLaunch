@@ -9,7 +9,7 @@
 <!-- The version number of this setup package -->
 <?define Version = "10.1.5" ?>
 <!-- GUIDs -->
-<?define AppGuid = "{B3399059-6E9A-436F-8BE0-F0C0E2DA1ADB}" ?>
+<?define LauncherGuid = "{B3399059-6E9A-436F-8BE0-F0C0E2DA1ADB}" ?>
 <?define CAppGuid = "{8C6EFB53-61EB-484D-9BC8-A20BB455CA88}" ?>
 <?define RSAppGuid = "{82BBD580-462D-47C4-AAB1-0C0E0DECB45B}" ?>
 <?define StartMenuGuid = "{0D01C72B-5FC9-4CDC-948C-CBA327E75C0A}" ?>
@@ -20,7 +20,7 @@
 
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <!-- Installer properties -->
-  <Product Id="$(var.AppGuid)" Name="$(var.Name)" Manufacturer="$(var.Manufacturer)" Version="$(var.Version)" UpgradeCode="$(var.UpgradeCode)" Language="1033">
+  <Product Id="*" Name="$(var.Name)" Manufacturer="$(var.Manufacturer)" Version="$(var.Version)" UpgradeCode="$(var.UpgradeCode)" Language="1033">
     <!-- Installer package properties -->
     <Package InstallerVersion="301" Compressed="yes" InstallPrivileges="limited" InstallScope="perUser" Manufacturer="$(var.Manufacturer)" />
     <!-- Application icon -->
@@ -93,7 +93,7 @@
   <!-- GhidraLaunch -->
   <Fragment>
     <ComponentGroup Id="LauncherComponents" Directory="INSTALLFOLDER">
-      <Component Id="LauncherComponent" Guid="$(var.AppGuid)">
+      <Component Id="LauncherComponent" Guid="$(var.LauncherGuid)">
         <CreateFolder />
         <RemoveFolder Id="RemoveINSTALLFOLDER" On="uninstall" />
         <RegistryValue Id="LauncherComponent" Name="Ghidra" Root="HKCU" Key="Software\$(var.Manufacturer)\$(var.Name)" Type="integer" Value="1" KeyPath="yes" />
