@@ -127,7 +127,7 @@ int APIENTRY wWinMain(
   } else if (wcsncmp(wDirectory, L"\\\\", 2) == 0) {
     dwLength = swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c \"\"%ls\\%ls\"\"", wApplicationName, wDirectory, BATCH_FILE);
   } else {
-    dwLength = swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c \"\".\\%ls\"\"", wApplicationName, BATCH_FILE);
+    dwLength = swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c .\\%ls", wApplicationName, BATCH_FILE);
   }
   if (dwLength == (DWORD)-1) {
     ShowError(L"Unable to prepare the command line, error", ERROR_FILENAME_EXCED_RANGE);

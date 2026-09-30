@@ -100,9 +100,9 @@ fn launch() -> i32 {
     };
 
     // cmd.exe cannot use a UNC working directory; local paths stay out of its command text
-    let mut arguments = OsString::from("/d /c \"\"");
     let unc = directory.to_string_lossy().starts_with(r"\\");
     let percent = directory.as_os_str().encode_wide().any(|unit| unit == b'%' as u16);
+    let mut arguments = OsString::from("/d /c ");
     if unc && percent {
         arguments = OsString::from("/d /v:on /c \"\"");
         // delayed expansion inserts these characters after cmd's percent-expansion pass
@@ -114,13 +114,15 @@ fn launch() -> i32 {
                 _ => arguments.push(OsString::from_wide(&[unit])),
             }
         }
+        arguments.push("\"\"");
     } else if unc {
+        arguments = OsString::from("/d /c \"\"");
         arguments.push(directory.join(BATCH_FILE));
+        arguments.push("\"\"");
     } else {
         arguments.push(r".\");
         arguments.push(BATCH_FILE);
     }
-    arguments.push("\"\"");
 
     // create process and wait for child to infinity and beyond
     let mut command = Command::new(cmd);
