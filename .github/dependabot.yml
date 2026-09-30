@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # SHA-pinned actions keep their version comment up to date
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # Cargo workspace (GhidraLaunchRS and GhidraLaunchGhidraHelperRS share the root Cargo.lock)
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # deliberately exact-pinned in GhidraLaunchGhidraHelperRS/Cargo.toml; update only after review
+      - dependency-name: zip

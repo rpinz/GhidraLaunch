@@ -1,0 +1,40 @@
+# cargo-deny policy for the Rust workspace: run `cargo deny check` from the repository root.
+
+[graph]
+# Only the shipped Windows x64 target is built.
+targets = ["x86_64-pc-windows-msvc"]
+all-features = false
+
+[advisories]
+# RustSec advisory database (default source). Report a hit on a locked/pinned dependency
+# instead of silently bumping it; add a justified `ignore` entry only after review.
+#
+# zip 2.6.1 (exact pin, see GhidraLaunchGhidraHelperRS\Cargo.toml) is affected by the
+# advisories below, which are all in `ZipArchive::extract()`/`ZipStreamReader::extract()`.
+# The helper never calls either: it validates every central-directory entry itself (rejecting
+# symlinks, Unix special types and Windows reparse attributes), copies only regular file data
+# via `ZipArchive::by_index` into `create_new` files on Windows, and never applies archive Unix
+# permission bits. Reviewed 2026-10-28; re-review when the pin moves (fixed in zip >= 9.0.0).
+ignore = [
+    { id = "RUSTSEC-2026-0367", reason = "SUID/SGID bits only applied by zip's extract(); the helper never calls it nor applies Unix modes" },
+    { id = "RUSTSEC-2026-0368", reason = "symlink creation only in zip's extract(); the helper rejects symlink entries and never calls it" },
+    { id = "RUSTSEC-2026-0369", reason = "permissions-through-symlinks only in zip's extract(); the helper never calls it" },
+]
+
+[licenses]
+# Exactly the licenses the resolved Windows dependency graph needs (OR expressions are
+# satisfied by one of these); Unlicense covers the workspace crates themselves.
+allow = ["Apache-2.0", "MIT", "Unlicense"]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside the workspace are not wildcards.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

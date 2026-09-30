@@ -1,0 +1,133 @@
+name: Build launchers and installers
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  launchers:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore pinned WiX v5 tooling
+        shell: pwsh
+        run: dotnet tool restore
+      - name: Restore pinned Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+      - name: Build and rebuild native executables
+        shell: pwsh
+        run: |
+          ./scripts/build.ps1 -Configuration ${{ matrix.configuration }}
+          ./scripts/build.ps1 -Configuration ${{ matrix.configuration }} -Rebuild
+          cargo fmt --all --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --workspace --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check executable hardening
+        shell: pwsh
+        run: |
+          $configuration = '${{ matrix.configuration }}'
+          $dumpbin = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -Last 1
+          foreach ($exe in @(
+              "GhidraLaunchC/x64/$configuration/bin/GhidraLaunchC.exe",
+              "GhidraLaunchGhidraHelperC/x64/$configuration/bin/GhidraLaunchGhidraHelperC.exe",
+              "GhidraLaunchRS/bin/$configuration/GhidraLaunchRS.exe",
+              "GhidraLaunchGhidraHelperRS/bin/$configuration/GhidraLaunchGhidraHelperRS.exe")) {
+            $imports = & $dumpbin.FullName /nologo /dependents $exe
+            if ($imports -match '(?i)vcruntime|msvcp|api-ms-win-crt|ucrtbase') { throw "$exe links the dynamic CRT" }
+            $headers = & $dumpbin.FullName /nologo /headers $exe
+            if (-not ($headers -match '^\s+Control Flow Guard$')) { throw "$exe is not built with Control Flow Guard" }
+            if (-not ($headers -match '^\s+CET compatible$')) { throw "$exe is not marked CET compatible" }
+          }
+      - name: Exercise both launchers
+        shell: pwsh
+        run: ./tests/launchers.ps1 -Configuration ${{ matrix.configuration }}
+      - name: Exercise both native extraction helpers
+        shell: pwsh
+        run: ./tests/ghidra-helper.ps1 -Configuration ${{ matrix.configuration }}
+      - name: Exercise native filesystem edge cases
+        shell: pwsh
+        run: |
+          $configuration = '${{ matrix.configuration }}'
+          ./scripts/build.ps1 -Target Faults -Configuration $configuration
+          $env:C_HELPER_EXE = (Resolve-Path "GhidraLaunchGhidraHelperC/x64/$configuration/bin/GhidraLaunchGhidraHelperC.exe").Path
+          $env:C_HELPER_FAULT_EXE = (Resolve-Path "GhidraLaunchGhidraHelperC/x64/$configuration/bin/GhidraLaunchGhidraHelperCFaults.exe").Path
+          $env:RUST_HELPER_EXE = (Resolve-Path "GhidraLaunchGhidraHelperRS/bin/$configuration/GhidraLaunchGhidraHelperRS.exe").Path
+          $env:C_HELPER_PEER_EXE = $env:RUST_HELPER_EXE
+          $env:RUST_HELPER_PEER_EXE = $env:C_HELPER_EXE
+          $env:C_HELPER_TEST_ROOT = Join-Path $env:RUNNER_TEMP 'c-helper-tests'
+          $env:RUST_HELPER_TEST_ROOT = Join-Path $env:RUNNER_TEMP 'rust-helper-tests'
+          New-Item -ItemType Directory -Path $env:C_HELPER_TEST_ROOT, $env:RUST_HELPER_TEST_ROOT -Force | Out-Null
+          python -m unittest discover -s tests -p 'test_*_helper.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build and inspect both installer pairs using synthetic upstream packages
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'installer-fixture'
+          ./tests/create-fixture.ps1 -Destination $fixture
+          ./scripts/build.ps1 -Target Installer
+          ./scripts/build.ps1 -Target Internal -PayloadRoot $fixture -VersionsFile "$fixture/Versions.wxi"
+          ./scripts/build.ps1 -Target Setup -PayloadRoot $fixture -VersionsFile "$fixture/Versions.wxi"
+          foreach ($variant in @('C', 'Rust')) {
+            ./tests/installer.ps1 -MsiPath "GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller$variant.msi" -Variant $variant
+            ./tests/bundle.ps1 -BundlePath "GhidraLaunchSetup/bin/Release/GhidraLaunchSetup$variant.exe" -Variant $variant
+          }
+      - name: Exercise same-version and newer-version bundle switching
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: ./tests/upgrades.ps1 -PayloadRoot (Join-Path $env:RUNNER_TEMP 'installer-fixture')
+      - name: Retain installer failure diagnostics
+        if: failure() && matrix.configuration == 'Release'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-logs
+          path: ${{ runner.temp }}/upgrade-logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  release-contracts:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install checksum-pinned Syft
+        shell: pwsh
+        run: ./scripts/install-syft.ps1
+      - name: Check build, signing, SBOM and publication contracts
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # advisories, licenses, bans and sources (deny.toml); the action is a Linux container
+  cargo-deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1

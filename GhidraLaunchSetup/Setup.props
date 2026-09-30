@@ -1,0 +1,57 @@
+<Project>
+  <PropertyGroup>
+    <OutputType>Bundle</OutputType>
+    <Stage Condition="'$(Stage)' == ''">Setup</Stage>
+    <OutputName>GhidraLaunch$(Stage)$(Variant)</OutputName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <InstallerPlatform>x86</InstallerPlatform>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>obj\$(Stage)$(Variant)\$(Configuration)\</IntermediateOutputPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**\*.wxl</DefaultItemExcludes>
+    <ReleaseVersion Condition="'$(ReleaseVersion)' == ''">0.0.0</ReleaseVersion>
+    <SourceRoot>$(MSBuildThisFileDirectory)..\</SourceRoot>
+    <PayloadRoot Condition="'$(PayloadRoot)' == ''">$(SourceRoot)</PayloadRoot>
+    <VersionsFile Condition="'$(VersionsFile)' == ''">$(MSBuildThisFileDirectory)Versions.wxi</VersionsFile>
+    <HelperPath Condition="'$(Variant)' == 'C'">$(SourceRoot)GhidraLaunchGhidraHelperC\x64\$(Configuration)\bin\GhidraLaunchGhidraHelperC.exe</HelperPath>
+    <HelperPath Condition="'$(Variant)' == 'Rust'">$(SourceRoot)GhidraLaunchGhidraHelperRS\bin\$(Configuration)\GhidraLaunchGhidraHelperRS.exe</HelperPath>
+    <MsiPath>$(SourceRoot)GhidraLaunchInstaller\bin\$(Configuration)\GhidraLaunchInstaller$(Variant).msi</MsiPath>
+    <CorePath>$(MSBuildThisFileDirectory)bin\$(Configuration)\GhidraLaunchCore$(Variant).exe</CorePath>
+    <JavaPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\GhidraLaunchJava.exe</JavaPath>
+    <DefineConstants>$(DefineConstants);Stage=$(Stage);Variant=$(Variant);ReleaseVersion=$(ReleaseVersion);HelperPath=$(HelperPath);MsiPath=$(MsiPath);CorePath=$(CorePath);JavaPath=$(JavaPath);PayloadRoot=$(PayloadRoot);VersionsFile=$(VersionsFile)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- keep in step with WixToolset.Sdk in global.json and wix in .config/dotnet-tools.json -->
+    <PackageReference Include="WixToolset.Bal.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+    <Compile Include="Bundle.wxs" />
+    <ProjectReference Include="GhidraLaunchCore$(Variant).wixproj" Condition="'$(Stage)' == 'Setup'" SetPlatform="Platform=x86" />
+    <ProjectReference Include="GhidraLaunchJava.wixproj" Condition="'$(Stage)' == 'Setup'" SetPlatform="Platform=x86" />
+    <ProjectReference Include="..\GhidraLaunchInstaller\GhidraLaunchInstaller$(Variant).wixproj" Condition="'$(Stage)' == 'Core'" SetPlatform="Platform=x86" />
+    <ProjectReference Include="..\GhidraLaunchGhidraHelperC\GhidraLaunchGhidraHelperC.vcxproj" Condition="'$(Stage)' == 'Core' and '$(Variant)' == 'C'" SetPlatform="Platform=x64" />
+    <ProjectReference Include="..\GhidraLaunchGhidraHelperRS\GhidraLaunchGhidraHelperRS.vcxproj" Condition="'$(Stage)' == 'Core' and '$(Variant)' == 'Rust'" SetPlatform="Platform=x64" />
+  </ItemGroup>
+  <Target Name="SetLegacyMigrationCacheId" BeforeTargets="TrackWixBuildParameters;CoreCompile"
+          Condition="'$(Stage)' == 'Setup'">
+    <!-- The same signed helper serves two packages; their cache folders must differ. -->
+    <GetFileHash Files="$(HelperPath)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_LegacyMigrationHelper" />
+    </GetFileHash>
+    <PropertyGroup>
+      <DefineConstants>$(DefineConstants);LegacyMigrationCacheId=GhidraLaunchLegacy$(Variant)-@(_LegacyMigrationHelper->'%(FileHash)')</DefineConstants>
+    </PropertyGroup>
+  </Target>
+  <Target Name="SetCoreProviderKey" BeforeTargets="TrackWixBuildParameters;CoreCompile"
+          Condition="'$(Stage)' == 'Setup'">
+    <!-- Resolve from the already-built, possibly signed Core. Extraction is
+         read-only; do not rebuild or stamp that prerequisite. This also works
+         for ordinary solution builds after project references have built. -->
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; { $ErrorActionPreference = 'Stop'; . '$(SourceRoot)scripts\build-version.ps1'; Get-BundleProviderKey '$(CorePath)' }&quot;"
+          ConsoleToMSBuild="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" ItemName="_CoreProviderKey" />
+    </Exec>
+    <Error Condition="'@(_CoreProviderKey)' == ''" Text="Could not read the built Core provider key." />
+    <PropertyGroup>
+      <DefineConstants>$(DefineConstants);CoreProviderKey=@(_CoreProviderKey)</DefineConstants>
+    </PropertyGroup>
+  </Target>
+</Project>

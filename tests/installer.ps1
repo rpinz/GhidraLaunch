@@ -1,0 +1,116 @@
+param(
+    [Parameter(Mandatory)][string]$MsiPath,
+    [Parameter(Mandatory)][ValidateSet('C', 'Rust')][string]$Variant,
+    [string]$ExpectedVersion,
+    [string]$ExpectedNativeVersion
+)
+
+$ErrorActionPreference = 'Stop'
+. "$(Split-Path $PSScriptRoot -Parent)/scripts/build-version.ps1"
+$installer = New-Object -ComObject WindowsInstaller.Installer
+$resolvedMsiPath = (Resolve-Path -LiteralPath $MsiPath).Path
+$database = $installer.OpenDatabase($resolvedMsiPath, 0)
+$summary = $installer.SummaryInformation($resolvedMsiPath, 0)
+if ($summary.Property(3) -ne 'Ghidra Launch' -or $summary.Property(4) -ne 'rpinz') {
+    throw 'Unexpected MSI SummaryInformation Subject/Author'
+}
+
+function Read-Rows($sql, $columns) {
+    $view = $database.OpenView($sql)
+    $null = $view.Execute()
+    try {
+        while ($record = $view.Fetch()) {
+            $row = @{}
+            for ($i = 1; $i -le $columns; $i++) { $row["Column$i"] = $record.StringData($i) }
+            [pscustomobject]$row
+        }
+    } finally {
+        $null = $view.Close()
+    }
+}
+
+$properties = @{}
+foreach ($row in @(Read-Rows 'SELECT `Property`, `Value` FROM `Property`' 2)) {
+    $properties[$row.Column1] = $row.Column2
+}
+if ($properties['ProductName'] -ne 'Ghidra Launch' -or $properties['GHIDRALAUNCHVARIANT'] -ne $Variant) {
+    throw 'Unexpected MSI product/variant'
+}
+if ($ExpectedVersion -and $properties['ProductVersion'] -ne $ExpectedVersion) {
+    throw "MSI ProductVersion '$($properties['ProductVersion'])' does not match '$ExpectedVersion'"
+}
+$fileVersion = @(Read-Rows 'SELECT `Version` FROM `File` WHERE `File` = ''LauncherFile''' 1)
+if ($fileVersion.Count -ne 1) { throw 'MSI must contain a versioned launcher' }
+$nativeVersion = Get-BuildVersion $(if ($ExpectedNativeVersion) { $ExpectedNativeVersion } else { $fileVersion[0].Column1 })
+Assert-MsiVersion $resolvedMsiPath $nativeVersion $Variant
+if ($properties['UpgradeCode'] -ne '{E0958D3F-13B8-4707-9E18-D7CBC2625E71}') {
+    throw 'MSI lost the legacy upgrade family'
+}
+$windowsSearch = @(Read-Rows 'SELECT `Key`, `Name`, `Type` FROM `RegLocator` WHERE `Signature_` = ''WindowsBuildSearch''' 3)
+if ($windowsSearch.Count -ne 1 -or $windowsSearch[0].Column1 -ne 'SOFTWARE\Microsoft\Windows NT\CurrentVersion' -or
+    $windowsSearch[0].Column2 -ne 'CurrentBuildNumber' -or ([int]$windowsSearch[0].Column3 -band 16) -eq 0) {
+    throw 'MSI must detect the actual Windows build through the 64-bit registry view'
+}
+$windowsCondition = @(Read-Rows 'SELECT `Condition` FROM `LaunchCondition`' 1 |
+    Where-Object { $_.Column1 -eq 'Installed OR (VersionNT64 AND WINDOWSBUILD >= 17763)' })
+if ($windowsCondition.Count -ne 1) { throw 'MSI must require Windows 10 1809+ x64 while permitting installed-product maintenance' }
+
+$launcher = if ($Variant -eq 'C') { 'GhidraLaunchC.exe' } else { 'GhidraLaunchRS.exe' }
+$files = @(Read-Rows 'SELECT `File`.`FileName`, `Component`.`Directory_` FROM `File`, `Component` WHERE `File`.`Component_` = `Component`.`Component`' 2)
+if ($files.Count -ne 1 -or ($files[0].Column1 -split '\|')[-1] -ne $launcher -or $files[0].Column2 -ne 'INSTALLFOLDER') {
+    throw "MSI must install only $launcher in INSTALLFOLDER"
+}
+$shortcuts = @(Read-Rows 'SELECT `Target` FROM `Shortcut`' 1)
+if ($shortcuts.Count -ne 2 -or @($shortcuts | Where-Object { $_.Column1 -ne '[#LauncherFile]' }).Count) {
+    throw 'Both shortcuts must target the matching launcher'
+}
+
+$directories = @(Read-Rows 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' 3 |
+    Where-Object { $_.Column1 -eq 'INSTALLFOLDER' })
+if ($directories.Count -ne 1 -or $directories[0].Column2 -ne 'LocalAppDataFolder' -or
+    ($directories[0].Column3 -split '\|')[-1] -ne 'Ghidra Launch') {
+    throw 'MSI installation directory differs from the advertised per-user layout'
+}
+$environment = @(Read-Rows 'SELECT `Environment`.`Name`, `Environment`.`Value` FROM `Environment`' 2 |
+    Where-Object { $_.Column1 -match 'GHIDRA_HOME$' })
+if ($environment.Count -ne 1 -or $environment[0].Column2 -ne '[INSTALLFOLDER]Ghidra') {
+    throw 'MSI must set GHIDRA_HOME to its managed Ghidra directory'
+}
+$owner = @(Read-Rows 'SELECT `Name`, `Value`, `Component_` FROM `Registry`' 3 |
+    Where-Object { $_.Column1 -eq 'PayloadOwner' })
+if ($owner.Count -ne 1 -or $owner[0].Column2 -ne '[GHIDRALAUNCHOWNER]' -or
+    $owner[0].Column3 -ne 'PayloadOwnerComponent') {
+    throw 'MSI must record the owning bundle provider key in its own component'
+}
+$sequence = @{}
+foreach ($row in @(Read-Rows 'SELECT `Action`, `Sequence` FROM `InstallExecuteSequence`' 2)) {
+    $sequence[$row.Column1] = [int]$row.Column2
+}
+if ($sequence['RemoveExistingProducts'] -le $sequence['InstallInitialize'] -or
+    $sequence['RemoveExistingProducts'] -ge $sequence['ProcessComponents']) {
+    throw 'Variant replacement must remove the old MSI inside the transaction before installing components'
+}
+$actionText = @{}
+foreach ($row in @(Read-Rows 'SELECT `Action`, `Description`, `Template` FROM `ActionText`' 3)) {
+    if (-not $row.Column2) { throw "ActionText row '$($row.Column1)' has no description" }
+    if ($row.Column3) { throw "ActionText row '$($row.Column1)' must not report per-file detail" }
+    $actionText[$row.Column1] = $row.Column2
+}
+foreach ($action in @('InstallValidate', 'ProcessComponents', 'RemoveExistingProducts', 'InstallFiles',
+                      'CreateShortcuts', 'WriteRegistryValues', 'WriteEnvironmentStrings', 'RegisterProduct',
+                      'RemoveFiles', 'RemoveShortcuts', 'RemoveRegistryValues', 'RemoveEnvironmentStrings',
+                      'UnpublishFeatures')) {
+    if (-not $actionText.ContainsKey($action)) {
+        throw "MSI must report progress for $action"
+    }
+    if (-not $sequence.ContainsKey($action)) {
+        throw "MSI reports progress for unsequenced action $action"
+    }
+}
+# Rollback bookkeeping is never sequenced but still surfaces in the progress UI.
+foreach ($action in @('Rollback', 'RollbackCleanup')) {
+    if (-not $actionText.ContainsKey($action)) {
+        throw "MSI must report progress for $action"
+    }
+}
+Write-Host "$Variant MSI layout checks passed."

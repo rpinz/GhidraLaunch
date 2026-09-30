@@ -398,5 +398,11 @@ FodyWeavers.xsd
 *.sln.iml
 
 *.zip
+*.res
 Ghidra/***
+GhidraLaunchSetup/Versions.wxi
 
+winget/out/
+
+# Cargo workspace build output (GhidraLaunchRS, GhidraLaunchGhidraHelperRS)
+/target/

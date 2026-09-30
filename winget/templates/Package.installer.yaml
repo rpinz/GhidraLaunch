@@ -1,0 +1,27 @@
+PackageIdentifier: rpinz.GhidraLaunch{{Variant}}
+PackageVersion: {{Version}}
+InstallerType: burn
+Scope: user
+MinimumOSVersion: 10.0.17763.0
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+InstallerSwitches:
+  Silent: /quiet /norestart
+  SilentWithProgress: /passive /norestart
+InstallerSuccessCodes:
+- 3010
+UpgradeBehavior: install
+ElevationRequirement: elevatesSelf
+Installers:
+- Architecture: x64
+  InstallerUrl: {{InstallerUrl}}
+  InstallerSha256: {{InstallerSha256}}
+  AppsAndFeaturesEntries:
+  - DisplayName: Ghidra Launch
+    Publisher: rpinz
+    DisplayVersion: {{DisplayVersion}}
+    InstallerType: burn
+ManifestType: installer
+ManifestVersion: 1.6.0

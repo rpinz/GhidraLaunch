@@ -1,0 +1,18 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Ghidra Launch Test Upstream" Manufacturer="Ghidra Launch Tests"
+           Version="1.0.0" Scope="perMachine"
+           UpgradeCode="{B8CE5537-E487-4C55-9979-A0D516890B24}">
+    <Feature Id="Fixture">
+      <Component Id="UpstreamMarker" Directory="TARGETDIR" Guid="*">
+        <RegistryValue Root="HKLM" Key="Software\Ghidra Launch Tests\Upstream"
+                       Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </Feature>
+    <?ifdef var.FailInstall ?>
+    <CustomAction Id="FailJavaInstall" Error="Intentional Java-stage failure" />
+    <InstallExecuteSequence>
+      <Custom Action="FailJavaInstall" After="InstallFiles" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+    <?endif?>
+  </Package>
+</Wix>

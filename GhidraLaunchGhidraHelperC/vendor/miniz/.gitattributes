@@ -1,0 +1,5 @@
+# provenance.json and SHA256SUMS record the upstream bytes, so these files must
+# check out verbatim no matter how a clone configures core.autocrlf. Upstream
+# ships LICENSE with CRLF and every source with LF; any end-of-line translation
+# breaks the recorded hashes and fails the release SBOM provenance check.
+* -text

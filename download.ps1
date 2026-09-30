@@ -1,0 +1,157 @@
+# download.ps1 : download the Temurin OpenJDK MSI and the Ghidra release zip
+#                used by the installer and verify their SHA-256 checksums
+
+$ErrorActionPreference = 'Stop'
+
+$ghidraApi = 'https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest'
+$versionsFile = Join-Path $PSScriptRoot 'GhidraLaunchSetup/Versions.wxi'
+
+function Download-Verified {
+    param($Name, $Url, $Checksum, $Output)
+
+    Write-Host -NoNewline $Name
+    if (-not $Url -or $Checksum -notmatch '^[0-9a-f]{64}$') {
+        Write-Host '  [❌] release URL or checksum not found'
+        return $false
+    }
+
+    $part = "$Output.part"
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $part -UseBasicParsing -ErrorAction Stop | Out-Null
+    } catch {
+        Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+        Write-Host '  [❌] download failed'
+        return $false
+    }
+
+    try {
+        if ((Get-FileHash -LiteralPath $part -Algorithm SHA256).Hash -ne $Checksum) {
+            Write-Host '  [❌] checksum mismatch'
+            return $false
+        }
+        Move-Item -LiteralPath $part -Destination $Output -Force
+        Write-Host '  [✔️]'
+        return $true
+    } finally {
+        Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Escape-XmlAttribute {
+    param([string]$Value)
+    if (-not $Value) { return '' }
+    return $Value -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;'
+}
+
+if (Test-Path -LiteralPath $versionsFile) {
+    Remove-Item -LiteralPath $versionsFile -Force
+}
+
+$status = 0
+$javaVersion = $null
+$ghidraZip = Join-Path $PSScriptRoot 'Ghidra.zip'
+
+try {
+    $ghidra = Invoke-RestMethod -Uri $ghidraApi -Headers @{ Accept = 'application/vnd.github+json' }
+} catch {
+    $ghidra = $null
+}
+
+$asset = $ghidra.assets | Where-Object { $_.name -cmatch '^ghidra_.*_PUBLIC_[0-9]+\.zip$' } | Select-Object -First 1
+$ghidraChecksum = $null
+if ($asset.digest) {
+    if ($asset.digest -match '^sha256:([0-9a-f]{64})$') {
+        $ghidraChecksum = $Matches[1]
+    }
+} elseif ($asset) {
+    $pattern = 'SHA-256:[^0-9a-f]*([0-9a-f]{64})(?![0-9a-f])'
+    $allHashes = @([regex]::Matches([string]$ghidra.body, $pattern, 'IgnoreCase'))
+    $namePattern = '(^|[^A-Za-z0-9_.-])' + [regex]::Escape($asset.name) + '($|[^A-Za-z0-9_.-])'
+    $filePattern = '([A-Za-z0-9_.-]+\.(zip|msi|exe|tar|gz|7z))(?=[^A-Za-z0-9_.-]|$)'
+    $lines = @([string]$ghidra.body -split '\r?\n')
+    $namedHashes = @(
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $fileNames = @([regex]::Matches($lines[$i], $filePattern, 'IgnoreCase') |
+                ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+            if ($lines[$i] -match $namePattern -and
+                $fileNames.Count -eq 1 -and $fileNames[0] -ceq $asset.name) {
+                $hashLine = $lines[$i]
+                if ($hashLine -notmatch $pattern -and $i + 1 -lt $lines.Count -and
+                    $lines[$i + 1] -notmatch $filePattern) {
+                    $hashLine = $lines[$i + 1]
+                }
+                foreach ($hash in [regex]::Matches($hashLine, $pattern, 'IgnoreCase')) {
+                    $hash
+                }
+            }
+        }
+    )
+    if ($namedHashes.Count -eq 1) {
+        $ghidraChecksum = $namedHashes[0].Groups[1].Value
+    } elseif ($namedHashes.Count -eq 0 -and $allHashes.Count -eq 1 -and
+              @($lines | Where-Object {
+                  $_ -match $pattern -and $_ -notmatch $filePattern
+              }).Count -eq 1) {
+        $ghidraChecksum = $allHashes[0].Groups[1].Value
+    }
+}
+
+if (Download-Verified 'Latest Ghidra' $asset.browser_download_url $ghidraChecksum $ghidraZip) {
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($ghidraZip)
+        try {
+            $entry = $archive.Entries | Where-Object { $_.FullName -cmatch '(^|/)Ghidra/application\.properties$' } | Select-Object -First 1
+            if (-not $entry) {
+                throw 'Ghidra Java requirement not found in release archive'
+            }
+            $reader = [System.IO.StreamReader]::new($entry.Open())
+            try {
+                $properties = $reader.ReadToEnd()
+            } finally {
+                $reader.Dispose()
+            }
+        } finally {
+            $archive.Dispose()
+        }
+
+        $versionMatch = [regex]::Match($properties, '(?m)^application\.java\.min=([^\r\n]*)')
+        $javaVersion = $versionMatch.Groups[1].Value -replace '\s', ''
+        if (-not $versionMatch.Success -or $javaVersion -notmatch '^[0-9]+$') {
+            throw 'Ghidra Java requirement is missing or invalid'
+        }
+
+        $jdkApi = "https://api.adoptium.net/v3/assets/latest/$javaVersion/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
+        try {
+            $jdkAssets = @(Invoke-RestMethod -Uri $jdkApi)
+        } catch {
+            $jdkAssets = @()
+        }
+        $jdk = $jdkAssets | Select-Object -First 1
+        $jdkMsi = Join-Path $PSScriptRoot "OpenJDK${javaVersion}U-jdk_x64.msi"
+        if (Download-Verified "Latest Temurin OpenJDK $javaVersion" $jdk.binary.installer.link $jdk.binary.installer.checksum $jdkMsi) {
+            $jdkUrl = $jdk.binary.installer.link
+        } else {
+            $status = 1
+        }
+    } catch {
+        Write-Host $_.Exception.Message
+        $status = 1
+    }
+} else {
+    $status = 1
+}
+
+if ($status -eq 0) {
+    $lines = @(
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<Include xmlns="http://wixtoolset.org/schemas/v4/wxs">',
+        ('  <?define JavaVersion = "{0}" ?>' -f $javaVersion),
+        ('  <?define JavaDownloadUrl = "{0}" ?>' -f (Escape-XmlAttribute $jdkUrl)),
+        ('  <?define GhidraDownloadUrl = "{0}" ?>' -f (Escape-XmlAttribute $asset.browser_download_url)),
+        '</Include>'
+    )
+    [System.IO.File]::WriteAllText($versionsFile, ($lines -join [Environment]::NewLine) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+}
+
+exit $status

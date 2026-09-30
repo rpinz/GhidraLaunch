@@ -1,0 +1,33 @@
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:bal="http://schemas.microsoft.com/wix/BalExtension"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <Bundle Name="Ghidra Launch" Manufacturer="rpinz" Version="$(var.LegacyVersion)"
+          UpgradeCode="{DFE05126-B29E-4298-A06B-63F833BC0BF8}">
+    <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkSidebarLicense">
+      <bal:WixStandardBootstrapperApplication LicenseUrl="https://unlicense.org/" SuppressRepair="yes" />
+    </BootstrapperApplicationRef>
+    <Chain>
+      <MsiPackage SourceFile="$(var.PayloadRoot)\OpenJDK21U-jdk_x64.msi"
+                  Compressed="no" DownloadUrl="https://example.invalid/OpenJDK21U-jdk_x64.msi" />
+      <ExePackage SourceFile="$(var.Destination)\LegacyHelper.exe" PerMachine="no"
+                  InstallCommand='extract "Ghidra.zip" "[LocalAppDataFolder]Ghidra Launch\Ghidra"'
+                  UninstallCommand='remove "[LocalAppDataFolder]Ghidra Launch\Ghidra" "Ghidra.zip"'
+                  DetectCondition="GhidraPayloadInstalled">
+        <Payload Name="Ghidra.zip" SourceFile="$(var.PayloadRoot)\Ghidra.zip"
+                 Compressed="no" DownloadUrl="https://example.invalid/Ghidra.zip" />
+      </ExePackage>
+      <MsiPackage SourceFile="$(var.Destination)\LegacyInstaller.msi" Compressed="yes" />
+      <?ifdef var.FailUninstall ?>
+      <!-- First on uninstall: fail before the cached legacy chain can change
+           anything. The incoming Core has already replaced its launcher MSI
+           and adopted the formerly plain-hash payload. -->
+      <ExePackage SourceFile="$(var.Destination)\LegacyFailureGate.exe"
+                  PerMachine="no" Cache="always" DetectCondition="1"
+                  UninstallCommand='"$(var.Destination)\fail-uninstall"' />
+      <?endif?>
+    </Chain>
+    <util:FileSearch Id="GhidraPayloadMarker" Variable="GhidraPayloadInstalled"
+                     Path="[LocalAppDataFolder]Ghidra Launch\Ghidra\.ghidralaunch-source.sha256"
+                     Result="exists" />
+  </Bundle>
+</Wix>

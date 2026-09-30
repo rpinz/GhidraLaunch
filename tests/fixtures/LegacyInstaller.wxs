@@ -1,0 +1,56 @@
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Ghidra Launch" Manufacturer="rpinz"
+           Version="$(var.LegacyVersion)" Language="1033" UpgradeCode="{E0958D3F-13B8-4707-9E18-D7CBC2625E71}">
+    <Package InstallerVersion="301" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited" />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="Logo.ico" SourceFile="$(var.Root)\Resources\Ghidra.ico" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version is installed." />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLFOLDER" Name="Ghidra Launch">
+          <Component Id="LauncherComponent" Guid="{B3399059-6E9A-436F-8BE0-F0C0E2DA1ADB}">
+            <CreateFolder />
+            <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+            <RegistryValue Name="Ghidra" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
+            <Environment Id="GhidraHomeEnv" Name="GHIDRA_HOME" Value="[INSTALLFOLDER]Ghidra" Permanent="no" Part="all" Action="set" System="no" />
+          </Component>
+          <Component Id="CLauncherComponent" Guid="{8C6EFB53-61EB-484D-9BC8-A20BB455CA88}">
+            <File Id="CLauncherComponent" Source="$(var.Root)\GhidraLaunchC\x64\Release\bin\GhidraLaunchC.exe" Checksum="yes" />
+            <RemoveFile Id="RemoveCLauncher" Name="GhidraLaunchC.exe" On="both" />
+            <RegistryValue Name="GhidraLaunchC.exe" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
+          </Component>
+          <Component Id="RSLauncherComponent" Guid="{82BBD580-462D-47C4-AAB1-0C0E0DECB45B}">
+            <File Id="RSLauncherComponent" Source="$(var.Root)\GhidraLaunchRS\bin\Release\GhidraLaunchRS.exe" Checksum="yes" />
+            <RemoveFile Id="RemoveRustLauncher" Name="GhidraLaunchRS.exe" On="both" />
+            <RegistryValue Name="GhidraLaunchRS.exe" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Ghidra Launch">
+          <Component Id="ApplicationShortcut" Guid="{0D01C72B-5FC9-4CDC-948C-CBA327E75C0A}">
+            <Shortcut Id="ApplicationStartMenuShortcut" Name="Ghidra Launch" Icon="Logo.ico"
+                      Target="[#CLauncherComponent]" WorkingDirectory="INSTALLFOLDER" />
+            <RemoveFolder Id="CleanupProgramsFolder" On="uninstall" />
+            <RegistryValue Name="StartMenuShortcut" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="DesktopFolder">
+        <Component Id="DesktopShortcutComponent" Guid="{50CC12AE-C922-40AA-86B8-4F3E631E92BF}">
+          <Shortcut Id="LauncherComponentShortcut" Name="Ghidra Launch" Icon="Logo.ico"
+                    Target="[#CLauncherComponent]" WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="CleanupDesktopShortcut" On="uninstall" />
+          <RegistryValue Name="DesktopShortcut" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </Directory>
+    <Feature Id="ProductFeature" Level="1">
+      <ComponentRef Id="LauncherComponent" />
+      <ComponentRef Id="CLauncherComponent" />
+      <ComponentRef Id="RSLauncherComponent" />
+      <ComponentRef Id="ApplicationShortcut" />
+      <ComponentRef Id="DesktopShortcutComponent" />
+    </Feature>
+  </Product>
+</Wix>
