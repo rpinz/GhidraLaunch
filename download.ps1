@@ -51,7 +51,7 @@ try {
     $ghidra = $null
 }
 
-$asset = $ghidra.assets | Where-Object { $_.name -match '^ghidra_.*_PUBLIC_[0-9]+\.zip$' } | Select-Object -First 1
+$asset = $ghidra.assets | Where-Object { $_.name -cmatch '^ghidra_.*_PUBLIC_[0-9]+\.zip$' } | Select-Object -First 1
 $checksumMatch = [regex]::Match([string]$ghidra.body, 'SHA-256:[^0-9a-f]*([0-9a-f]{64})', 'IgnoreCase')
 $ghidraChecksum = if ($checksumMatch.Success) { $checksumMatch.Groups[1].Value } else { $null }
 
@@ -60,7 +60,7 @@ if (Download-Verified 'Latest Ghidra' $asset.browser_download_url $ghidraChecksu
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $archive = [System.IO.Compression.ZipFile]::OpenRead($ghidraZip)
         try {
-            $entry = $archive.Entries | Where-Object { $_.FullName -match '(^|/)Ghidra/application\.properties$' } | Select-Object -First 1
+            $entry = $archive.Entries | Where-Object { $_.FullName -cmatch '(^|/)Ghidra/application\.properties$' } | Select-Object -First 1
             if (-not $entry) {
                 throw 'Ghidra Java requirement not found in release archive'
             }
@@ -74,11 +74,11 @@ if (Download-Verified 'Latest Ghidra' $asset.browser_download_url $ghidraChecksu
             $archive.Dispose()
         }
 
-        $versionMatch = [regex]::Match($properties, '(?m)^application\.java\.min[ \t]*=[ \t]*([0-9]+)[ \t]*\r?$')
-        if (-not $versionMatch.Success) {
+        $versionMatch = [regex]::Match($properties, '(?m)^application\.java\.min=([^=\r\n]*)')
+        $javaVersion = $versionMatch.Groups[1].Value -replace '\s', ''
+        if (-not $versionMatch.Success -or $javaVersion -notmatch '^[0-9]+$') {
             throw 'Ghidra Java requirement is missing or invalid'
         }
-        $javaVersion = $versionMatch.Groups[1].Value
 
         $jdkApi = "https://api.adoptium.net/v3/assets/latest/$javaVersion/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
         try {
