@@ -1,0 +1,23 @@
+PackageIdentifier: rpinz.GhidraLaunch{{Variant}}
+PackageVersion: {{Version}}
+PackageLocale: en-US
+Publisher: rpinz
+PublisherUrl: https://github.com/rpinz
+PublisherSupportUrl: https://github.com/rpinz/GhidraLaunch/issues
+PackageName: Ghidra Launch ({{Variant}})
+PackageUrl: https://github.com/rpinz/GhidraLaunch
+License: Unlicense
+LicenseUrl: https://unlicense.org/
+ShortDescription: Native Windows launcher, Ghidra and Eclipse Temurin JDK installed together.
+Description: |-
+  Installs Ghidra under %LocalAppData%\Ghidra Launch\Ghidra, the Eclipse Temurin JDK it needs,
+  and a native ({{Variant}}) launcher that replaces ghidraRun.bat. Ghidra and Temurin are downloaded
+  during installation, so an internet connection is required. Temurin installs machine-wide and
+  asks for administrator approval. The C and Rust launcher packages replace one another.
+Tags:
+- ghidra
+- launcher
+- reverse-engineering
+ReleaseNotesUrl: https://github.com/rpinz/GhidraLaunch/releases/tag/v{{Version}}
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

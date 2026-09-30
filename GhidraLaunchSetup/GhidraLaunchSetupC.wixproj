@@ -1,0 +1,6 @@
+<Project Sdk="WixToolset.Sdk">
+  <PropertyGroup>
+    <Variant>C</Variant>
+  </PropertyGroup>
+  <Import Project="Setup.props" />
+</Project>

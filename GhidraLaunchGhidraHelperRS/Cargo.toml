@@ -1,0 +1,30 @@
+[package]
+name = "ghidra_launch_helper"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "GhidraLaunchGhidraHelperRS"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+sha2 = "0.10.9"
+# Exact pin: 2.6.1 is the final 2.x release and the version reviewed against the shared
+# C/Rust extraction contract (UTF-8 flag vs. CP437 names, entry metadata the helper validates
+# itself). No rationale was recorded when it was introduced (db9ddfb); the pin keeps
+# `cargo update` from changing the archive parser without a deliberate review. Moving to a
+# newer major requires re-running the shared helper tests (tests\test_*_helper.py).
+zip = { version = "=2.6.1", default-features = false, features = ["deflate"] }
+
+[build-dependencies]
+embed-resource = "3.0.11"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Registry"] }

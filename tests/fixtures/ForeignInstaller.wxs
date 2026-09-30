@@ -1,0 +1,12 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Unrelated bundle fixture" Manufacturer="Ghidra Launch Tests"
+           Version="99.0.0" Scope="perMachine"
+           UpgradeCode="{3B2E10B9-404D-4D0E-9EFA-4703FE8CD860}">
+    <Feature Id="Fixture">
+      <Component Id="ForeignMarker" Directory="TARGETDIR" Guid="*">
+        <RegistryValue Root="HKLM" Key="Software\Ghidra Launch Tests\Foreign"
+                       Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </Feature>
+  </Package>
+</Wix>

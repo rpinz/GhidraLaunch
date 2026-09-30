@@ -1,0 +1,4 @@
+# Static CRT, Control Flow Guard (/guard:cf), CET shadow-stack compatibility (/CETCOMPAT)
+# and load-time imports only from System32
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "control-flow-guard", "-C", "link-arg=/CETCOMPAT", "-C", "link-arg=/DEPENDENTLOADFLAG:0x800"]

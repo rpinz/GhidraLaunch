@@ -1,18 +1,367 @@
 // main.c : Launch Ghidra ghidraRun.bat
 //
 
-#include <windows.h>
-#include <stdio.h>
-#include <wchar.h>
-
-#define APPLICATION_NAME L"GhidraLaunch\0"
-#define COMMANDLINE L"cmd.exe /c .\\ghidraRun.bat\0"
-#define ERROR_FORMAT L"Failed to launch Ghidra!\nFatal Error: %d\0"
-#define VC_EXTRALEAN
 #define WIN32_LEAN_AND_MEAN
 
-// no need for a console window
-#pragma comment(linker, "/SUBSYSTEM:windows /ENTRY:wWinMainCRTStartup")
+#include <windows.h>
+#include <stdlib.h>
+#include <wchar.h>
+// after the CRT headers; bounded string functions that report truncation instead of aborting
+#include <strsafe.h>
+
+#define APPLICATION_NAME L"GhidraLaunch"
+#define BATCH_FILE L"ghidraRun.bat"
+#define ERROR_FORMAT L"Failed to launch Ghidra!\n%ls %lu"
+#define PATH_SIZE 32768
+
+// display message box with error message
+static void ShowError(const WCHAR* const wMessage, const DWORD dwCode) {
+  WCHAR wErrorMessage[1024];
+  const HRESULT hr = StringCchPrintfW(wErrorMessage, _countof(wErrorMessage), ERROR_FORMAT, wMessage, dwCode);
+
+  // a truncated message is still worth showing
+  if (FAILED(hr) && hr != STRSAFE_E_INSUFFICIENT_BUFFER) {
+    MessageBeep(MB_ICONERROR);
+    return;
+  }
+
+  MessageBoxW(
+    NULL,
+    wErrorMessage,
+    APPLICATION_NAME,
+    MB_ICONERROR | MB_SYSTEMMODAL | MB_SETFOREGROUND
+  );
+}
+
+// append text to a buffer, FALSE when it does not fit
+static BOOL Append(WCHAR* const wBuffer, const size_t count, const WCHAR* const wText) {
+  return SUCCEEDED(StringCchCatW(wBuffer, count, wText));
+}
+
+// append " <value of environment variable>" when the variable is set
+static BOOL AppendEnvironment(WCHAR* const wBuffer, const size_t count, const WCHAR* const wName) {
+  static WCHAR wValue[PATH_SIZE];
+  const DWORD dwLength = GetEnvironmentVariableW(wName, wValue, _countof(wValue));
+
+  if (dwLength >= _countof(wValue)) {
+    return FALSE;
+  }
+  return dwLength == 0 || (Append(wBuffer, count, L" ") && Append(wBuffer, count, wValue));
+}
+
+static BOOL IsFile(const WCHAR* const wPath) {
+  const DWORD dwAttributes = GetFileAttributesW(wPath);
+  return dwAttributes != INVALID_FILE_ATTRIBUTES && !(dwAttributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// run a hidden process; when wOutput is not NULL its standard output is captured as UTF-16
+static BOOL RunProcess(
+  const WCHAR* const wApplication,
+  WCHAR* const wCommandLine,
+  const WCHAR* const wDirectory,
+  WCHAR* const wOutput,
+  const size_t count,
+  DWORD* const pdwExitCode
+) {
+  static char cOutput[PATH_SIZE];
+  SECURITY_ATTRIBUTES lpSecurity = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+  STARTUPINFOEXW lpStartupInfo;
+  PROCESS_INFORMATION lpProcessInfo;
+  LPPROC_THREAD_ATTRIBUTE_LIST lpAttributes = NULL;
+  BOOL bAttributesInitialized = FALSE;
+  SIZE_T attributeSize = 0;
+  HANDLE hInherit[2];
+  HANDLE hRead = NULL;
+  HANDLE hWrite = NULL;
+  HANDLE hNull;
+  DWORD dwRead;
+  DWORD dwUsed = 0;
+  BOOL bResult = FALSE;
+
+  hNull = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &lpSecurity, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (hNull == INVALID_HANDLE_VALUE) {
+    return FALSE;
+  }
+  if (wOutput != NULL) {
+    wOutput[0] = L'\0';
+    if (!CreatePipe(&hRead, &hWrite, &lpSecurity, 0) || !SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0)) {
+      goto cleanup;
+    }
+  }
+
+  ZeroMemory(&lpStartupInfo, sizeof(lpStartupInfo));
+  ZeroMemory(&lpProcessInfo, sizeof(PROCESS_INFORMATION));
+  lpStartupInfo.StartupInfo.cb = sizeof(lpStartupInfo);
+  lpStartupInfo.StartupInfo.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+  lpStartupInfo.StartupInfo.wShowWindow = SW_HIDE;
+  lpStartupInfo.StartupInfo.hStdInput = hNull;
+  lpStartupInfo.StartupInfo.hStdOutput = hWrite != NULL ? hWrite : hNull;
+  lpStartupInfo.StartupInfo.hStdError = hNull;
+
+  // the child inherits only its standard handles, not every inheritable handle in this process
+  hInherit[0] = hNull;
+  hInherit[1] = hWrite;
+  // the first call only reports the required size
+  InitializeProcThreadAttributeList(NULL, 1, 0, &attributeSize);
+  lpAttributes = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, attributeSize);
+  if (lpAttributes == NULL || !InitializeProcThreadAttributeList(lpAttributes, 1, 0, &attributeSize)) {
+    goto cleanup;
+  }
+  bAttributesInitialized = TRUE;
+  if (!UpdateProcThreadAttribute(lpAttributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, hInherit, (hWrite != NULL ? 2 : 1) * sizeof(HANDLE), NULL, NULL)) {
+    goto cleanup;
+  }
+  lpStartupInfo.lpAttributeList = lpAttributes;
+
+  if (!CreateProcessW(wApplication, wCommandLine, NULL, NULL, TRUE, CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, NULL, wDirectory, &lpStartupInfo.StartupInfo, &lpProcessInfo)) {
+    goto cleanup;
+  }
+  CloseHandle(lpProcessInfo.hThread);
+
+  if (hWrite != NULL) {
+    // the child holds the only other write end, so reads end when it exits
+    CloseHandle(hWrite);
+    hWrite = NULL;
+    while (ReadFile(hRead, cOutput + dwUsed, (DWORD)sizeof(cOutput) - 1 - dwUsed, &dwRead, NULL) && dwRead != 0) {
+      dwUsed += dwRead;
+      if (dwUsed >= sizeof(cOutput) - 1) {
+        // output is too large to be what we expect; stop reading and let the child end
+        TerminateProcess(lpProcessInfo.hProcess, EXIT_FAILURE);
+        break;
+      }
+    }
+  }
+
+  if (WaitForSingleObject(lpProcessInfo.hProcess, INFINITE) == WAIT_OBJECT_0 && GetExitCodeProcess(lpProcessInfo.hProcess, pdwExitCode)) {
+    bResult = TRUE;
+    if (wOutput != NULL) {
+      cOutput[dwUsed] = '\0';
+      if (dwUsed != 0 && MultiByteToWideChar(CP_ACP, 0, cOutput, (int)dwUsed + 1, wOutput, (int)count) == 0) {
+        wOutput[0] = L'\0';
+        bResult = FALSE;
+      }
+    }
+  }
+  CloseHandle(lpProcessInfo.hProcess);
+
+cleanup:
+  if (bAttributesInitialized) {
+    DeleteProcThreadAttributeList(lpAttributes);
+  }
+  if (lpAttributes != NULL) {
+    HeapFree(GetProcessHeap(), 0, lpAttributes);
+  }
+  if (hRead != NULL) {
+    CloseHandle(hRead);
+  }
+  if (hWrite != NULL) {
+    CloseHandle(hWrite);
+  }
+  CloseHandle(hNull);
+  return bResult;
+}
+
+// next line of a captured output, NUL terminated in place; NULL when finished
+static WCHAR* NextLine(WCHAR** const ppwCursor) {
+  WCHAR* wLine = *ppwCursor;
+  WCHAR* wEnd;
+
+  while (*wLine != L'\0') {
+    wEnd = wLine + wcscspn(wLine, L"\r\n");
+    *ppwCursor = *wEnd == L'\0' ? wEnd : wEnd + 1;
+    *wEnd = L'\0';
+    if (wEnd != wLine) {
+      return wLine;
+    }
+    wLine = *ppwCursor;
+  }
+  return NULL;
+}
+
+// java.exe that runs, like launch.bat: PATH first, then JAVA_HOME
+static BOOL FindJava(const WCHAR* const wDirectory, WCHAR* const wJava, const size_t count) {
+  static WCHAR wCommandLine[PATH_SIZE];
+  static WCHAR wHome[PATH_SIZE];
+  static WCHAR wSearchPath[PATH_SIZE];
+  DWORD dwExitCode;
+  // Search only PATH: with lpPath NULL, SearchPathW also tries the current directory
+  // (after the system directories in safe mode, but still before PATH).
+  DWORD dwLength = GetEnvironmentVariableW(L"PATH", wSearchPath, _countof(wSearchPath));
+
+  if (dwLength != 0 && dwLength < _countof(wSearchPath)) {
+    dwLength = SearchPathW(wSearchPath, L"java.exe", NULL, (DWORD)count, wJava, NULL);
+    if (dwLength != 0 && dwLength < count &&
+        SUCCEEDED(StringCchPrintfW(wCommandLine, _countof(wCommandLine), L"\"%ls\" -version", wJava)) &&
+        RunProcess(wJava, wCommandLine, wDirectory, NULL, 0, &dwExitCode) && dwExitCode == EXIT_SUCCESS) {
+      return TRUE;
+    }
+  }
+
+  dwLength = GetEnvironmentVariableW(L"JAVA_HOME", wHome, _countof(wHome));
+  if (dwLength == 0 || dwLength >= _countof(wHome) ||
+      FAILED(StringCchPrintfW(wJava, count, L"%ls\\bin\\java.exe", wHome)) ||
+      FAILED(StringCchPrintfW(wCommandLine, _countof(wCommandLine), L"\"%ls\" -version", wJava))) {
+    return FALSE;
+  }
+  return RunProcess(wJava, wCommandLine, wDirectory, NULL, 0, &dwExitCode) && dwExitCode == EXIT_SUCCESS;
+}
+
+// run LaunchSupport with an option; wOutput receives its standard output when not NULL
+static BOOL RunLaunchSupport(
+  const WCHAR* const wJava,
+  const WCHAR* const wDirectory,
+  const WCHAR* const wOption,
+  WCHAR* const wOutput,
+  const size_t count
+) {
+  static WCHAR wCommandLine[PATH_SIZE];
+  DWORD dwExitCode;
+
+  if (FAILED(StringCchPrintfW(
+    wCommandLine,
+    _countof(wCommandLine),
+    L"\"%ls\" -cp \"%ls\\support\\LaunchSupport.jar\" LaunchSupport \"%ls\" %ls",
+    wJava,
+    wDirectory,
+    wDirectory,
+    wOption
+  ))) {
+    return FALSE;
+  }
+  return RunProcess(wJava, wCommandLine, wDirectory, wOutput, count, &dwExitCode) && dwExitCode == EXIT_SUCCESS;
+}
+
+// Start Ghidra the way ghidraRun.bat and support\launch.bat do, without cmd.exe.
+// Returns FALSE when that is not possible so the caller can fall back to ghidraRun.bat.
+static BOOL LaunchNative(const WCHAR* const wDirectory, const WCHAR* const wArguments, DWORD* const pdwExitCode, BOOL* const pbJdkError) {
+  static WCHAR wPath[PATH_SIZE];
+  static WCHAR wJava[PATH_SIZE];
+  static WCHAR wJavaw[PATH_SIZE];
+  static WCHAR wJavaHome[PATH_SIZE];
+  static WCHAR wVmArgs[PATH_SIZE];
+  static WCHAR wOutput[PATH_SIZE];
+  static WCHAR wCommandLine[PATH_SIZE];
+  static WCHAR wValue[PATH_SIZE];
+  STARTUPINFOW lpStartupInfo;
+  PROCESS_INFORMATION lpProcessInfo;
+  WCHAR* wCursor;
+  WCHAR* wLine;
+  WCHAR* wEquals;
+  DWORD dwLength;
+
+  *pbJdkError = FALSE;
+  // launch.bat rejects '!' in the path and a trailing backslash would escape the quotes below
+  const size_t length = wcslen(wDirectory);
+  if (length == 0 || wDirectory[length - 1] == L'\\' || wcschr(wDirectory, L'!') != NULL) {
+    return FALSE;
+  }
+
+  // only a packaged Ghidra is handled natively, not a development checkout
+  if (FAILED(StringCchPrintfW(wPath, _countof(wPath), L"%ls\\Ghidra\\application.properties", wDirectory)) || !IsFile(wPath) ||
+      FAILED(StringCchPrintfW(wPath, _countof(wPath), L"%ls\\support\\LaunchSupport.jar", wDirectory)) || !IsFile(wPath) ||
+      FAILED(StringCchPrintfW(wPath, _countof(wPath), L"%ls\\Ghidra\\Framework\\Utility\\lib\\Utility.jar", wDirectory)) || !IsFile(wPath)) {
+    return FALSE;
+  }
+
+  if (!FindJava(wDirectory, wJava, _countof(wJava))) {
+    *pbJdkError = TRUE;
+    return FALSE;
+  }
+
+  // Interactive LaunchSupport requires a console; report selection failure instead.
+  wJavaHome[0] = L'\0';
+  if (RunLaunchSupport(wJava, wDirectory, L"-jdk_home -save", wOutput, _countof(wOutput))) {
+    wCursor = wOutput;
+    while ((wLine = NextLine(&wCursor)) != NULL) {
+      if (FAILED(StringCchCopyW(wJavaHome, _countof(wJavaHome), wLine))) {
+        return FALSE;
+      }
+    }
+  }
+  if (wJavaHome[0] == L'\0' || FAILED(StringCchPrintfW(wJava, _countof(wJava), L"%ls\\bin\\java.exe", wJavaHome)) || !IsFile(wJava) ||
+      FAILED(StringCchPrintfW(wJavaw, _countof(wJavaw), L"%ls\\bin\\javaw.exe", wJavaHome)) || !IsFile(wJavaw)) {
+    *pbJdkError = TRUE;
+    return FALSE;
+  }
+
+  // environment variables requested by launch.properties never override existing ones
+  if (!RunLaunchSupport(wJava, wDirectory, L"-envvars", wOutput, _countof(wOutput))) {
+    return FALSE;
+  }
+  wCursor = wOutput;
+  while ((wLine = NextLine(&wCursor)) != NULL) {
+    wEquals = wcschr(wLine, L'=');
+    if (wEquals == NULL || wEquals == wLine) {
+      continue;
+    }
+    *wEquals = L'\0';
+    if (GetEnvironmentVariableW(wLine, wValue, _countof(wValue)) == 0) {
+      SetEnvironmentVariableW(wLine, wEquals + 1);
+    }
+  }
+
+  // JVM arguments from launch.properties
+  if (!RunLaunchSupport(wJava, wDirectory, L"-vmargs", wOutput, _countof(wOutput))) {
+    return FALSE;
+  }
+  wVmArgs[0] = L'\0';
+  wCursor = wOutput;
+  while ((wLine = NextLine(&wCursor)) != NULL) {
+    if (!Append(wVmArgs, _countof(wVmArgs), L" ") || !Append(wVmArgs, _countof(wVmArgs), wLine)) {
+      return FALSE;
+    }
+  }
+
+  // command line in the order launch.bat builds it
+  if (FAILED(StringCchPrintfW(wCommandLine, _countof(wCommandLine), L"\"%ls\"", wJavaw)) ||
+      !AppendEnvironment(wCommandLine, _countof(wCommandLine), L"FORCE_JAVA_VERSION") ||
+      !AppendEnvironment(wCommandLine, _countof(wCommandLine), L"JAVA_USER_HOME_DIR_OVERRIDE") ||
+      !Append(wCommandLine, _countof(wCommandLine), wVmArgs)) {
+    return FALSE;
+  }
+  dwLength = GetEnvironmentVariableW(L"USERPROFILE", wValue, _countof(wValue));
+  if (dwLength >= _countof(wValue)) {
+    return FALSE;
+  }
+  if (dwLength != 0 && GetFileAttributesW(wValue) != INVALID_FILE_ATTRIBUTES &&
+      (FAILED(StringCchPrintfW(wPath, _countof(wPath), L" -Duser.home=\"%ls\"", wValue)) || !Append(wCommandLine, _countof(wCommandLine), wPath))) {
+    return FALSE;
+  }
+  // GHIDRA_GUI_MAXMEM defaults to GHIDRA_MAXMEM
+  dwLength = GetEnvironmentVariableW(L"GHIDRA_GUI_MAXMEM", wValue, _countof(wValue));
+  if (dwLength == 0 || dwLength >= _countof(wValue)) {
+    dwLength = GetEnvironmentVariableW(L"GHIDRA_MAXMEM", wValue, _countof(wValue));
+  }
+  if (dwLength >= _countof(wValue)) {
+    return FALSE;
+  }
+  if (dwLength != 0 && (!Append(wCommandLine, _countof(wCommandLine), L" -Xmx") || !Append(wCommandLine, _countof(wCommandLine), wValue))) {
+    return FALSE;
+  }
+  if (!AppendEnvironment(wCommandLine, _countof(wCommandLine), L"GHIDRA_JAVA_OPTIONS") ||
+      !AppendEnvironment(wCommandLine, _countof(wCommandLine), L"GHIDRA_GUI_JAVA_OPTIONS") ||
+      FAILED(StringCchPrintfW(wPath, _countof(wPath), L" -cp \"%ls\\Ghidra\\Framework\\Utility\\lib\\Utility.jar\" ghidra.Ghidra ghidra.GhidraRun", wDirectory)) ||
+      !Append(wCommandLine, _countof(wCommandLine), wPath) ||
+      (wArguments[0] != L'\0' && (!Append(wCommandLine, _countof(wCommandLine), L" ") || !Append(wCommandLine, _countof(wCommandLine), wArguments)))) {
+    return FALSE;
+  }
+
+  ZeroMemory(&lpStartupInfo, sizeof(STARTUPINFOW));
+  ZeroMemory(&lpProcessInfo, sizeof(PROCESS_INFORMATION));
+  lpStartupInfo.cb = sizeof(STARTUPINFOW);
+  if (!CreateProcessW(wJavaw, wCommandLine, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, wDirectory, &lpStartupInfo, &lpProcessInfo)) {
+    return FALSE;
+  }
+  CloseHandle(lpProcessInfo.hThread);
+
+  // like launch.bat, only report a Ghidra that dies right away
+  *pdwExitCode = EXIT_SUCCESS;
+  if (WaitForSingleObject(lpProcessInfo.hProcess, 1000) == WAIT_OBJECT_0 && !GetExitCodeProcess(lpProcessInfo.hProcess, pdwExitCode)) {
+    *pdwExitCode = EXIT_FAILURE;
+  }
+  CloseHandle(lpProcessInfo.hProcess);
+  return TRUE;
+}
 
 // main entrypoint
 int APIENTRY wWinMain(
@@ -21,14 +370,106 @@ int APIENTRY wWinMain(
   _In_ LPWSTR lpCmdLine,
   _In_ int nShowCmd
 ) {
+  static WCHAR wDirectory[PATH_SIZE];
+  static WCHAR wGhidraDirectory[PATH_SIZE];
+  static WCHAR wApplicationName[PATH_SIZE];
+  static WCHAR wCommandLine[PATH_SIZE];
   STARTUPINFOW lpStartupInfo;
   PROCESS_INFORMATION lpProcessInfo;
+  WCHAR* wSeparator;
+  DWORD dwLength;
+  DWORD dwExitCode = EXIT_FAILURE;
+  BOOL bJdkError = FALSE;
 
-  WCHAR* wCommandLine = malloc(1024);
-  const WCHAR* const wCommandLineString = COMMANDLINE;
-  const WCHAR* const wApplicationName = APPLICATION_NAME;
-  const WCHAR* const wErrorFormat = ERROR_FORMAT;
-  int returnCode = EXIT_FAILURE;
+  UNREFERENCED_PARAMETER(hInstance);
+  UNREFERENCED_PARAMETER(hPrevInstance);
+  UNREFERENCED_PARAMETER(nShowCmd);
+
+  // Never load DLLs from the application or current directory, and keep safe search mode
+  // for any path search (FindJava searches PATH only) (hardening only, not fatal).
+  SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+  SetSearchPathMode(BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE | BASE_SEARCH_PATH_PERMANENT);
+
+  // directory containing this launcher, used when GHIDRA_HOME is unset
+  dwLength = GetModuleFileNameW(NULL, wDirectory, _countof(wDirectory));
+  if (dwLength == 0 || dwLength >= _countof(wDirectory)) {
+    ShowError(L"Unable to locate the launcher, error", GetLastError());
+    return EXIT_FAILURE;
+  }
+  wSeparator = wcsrchr(wDirectory, L'\\');
+  if (wSeparator == NULL) {
+    ShowError(L"Unable to locate the launcher, error", ERROR_BAD_PATHNAME);
+    return EXIT_FAILURE;
+  }
+  *wSeparator = L'\0';
+
+  // use an existing Ghidra installation when configured
+  dwLength = GetEnvironmentVariableW(L"GHIDRA_HOME", wGhidraDirectory, _countof(wGhidraDirectory));
+  if (dwLength >= _countof(wGhidraDirectory)) {
+    ShowError(L"GHIDRA_HOME path is too long, error", ERROR_FILENAME_EXCED_RANGE);
+    return EXIT_FAILURE;
+  }
+  if (dwLength != 0) {
+    // Child processes run inside Ghidra, so their paths must not remain relative.
+    dwLength = GetFullPathNameW(wGhidraDirectory, _countof(wDirectory), wDirectory, NULL);
+    if (dwLength == 0) {
+      ShowError(L"Unable to resolve GHIDRA_HOME, error", GetLastError());
+      return EXIT_FAILURE;
+    }
+    if (dwLength >= _countof(wDirectory)) {
+      ShowError(L"Resolved GHIDRA_HOME path is too long, error", ERROR_FILENAME_EXCED_RANGE);
+      return EXIT_FAILURE;
+    }
+  }
+
+  // start Ghidra directly; fall back to ghidraRun.bat when that is not possible
+  if (LaunchNative(wDirectory, lpCmdLine, &dwExitCode, &bJdkError)) {
+    if (dwExitCode != EXIT_SUCCESS) {
+      ShowError(L"Ghidra exited with code", dwExitCode);
+    }
+    return (int)dwExitCode;
+  }
+  if (bJdkError) {
+    ShowError(L"No supported JDK could be selected. Set JAVA_HOME to a supported 64-bit JDK and restart Ghidra Launch. For manual selection, run ghidraRun.bat from a command prompt. Error", ERROR_NOT_FOUND);
+    return EXIT_FAILURE;
+  }
+
+  // the fallback needs ghidraRun.bat
+  if (FAILED(StringCchPrintfW(wCommandLine, _countof(wCommandLine), L"%ls\\%ls", wDirectory, BATCH_FILE))) {
+    ShowError(L"Unable to locate ghidraRun.bat, error", ERROR_FILENAME_EXCED_RANGE);
+    return EXIT_FAILURE;
+  }
+  dwLength = GetFileAttributesW(wCommandLine);
+  if (dwLength == INVALID_FILE_ATTRIBUTES || (dwLength & FILE_ATTRIBUTE_DIRECTORY)) {
+    if (FAILED(StringCchPrintfW(wCommandLine, _countof(wCommandLine), L"Ghidra could not be started: ghidraRun.bat not found in %.500ls (GHIDRA_HOME or the launcher folder), error", wDirectory))) {
+      StringCchCopyW(wCommandLine, _countof(wCommandLine), L"ghidraRun.bat not found in GHIDRA_HOME or next to the launcher, error");
+    }
+    ShowError(wCommandLine, ERROR_FILE_NOT_FOUND);
+    return EXIT_FAILURE;
+  }
+
+  // absolute path to cmd.exe, never resolved through the search path
+  dwLength = GetSystemDirectoryW(wApplicationName, _countof(wApplicationName));
+  if (dwLength == 0 || dwLength >= _countof(wApplicationName)) {
+    // truncation does not set the last error
+    ShowError(L"Unable to locate cmd.exe, error", dwLength == 0 ? GetLastError() : ERROR_INSUFFICIENT_BUFFER);
+    return EXIT_FAILURE;
+  }
+  if (FAILED(StringCchCatW(wApplicationName, _countof(wApplicationName), L"\\cmd.exe"))) {
+    ShowError(L"Unable to locate cmd.exe, error", ERROR_FILENAME_EXCED_RANGE);
+    return EXIT_FAILURE;
+  }
+
+  // Insert paths and arguments after cmd's percent expansion and metacharacter parsing.
+  if (!SetEnvironmentVariableW(L"GL_BATCH", wcsncmp(wDirectory, L"\\\\", 2) == 0 ? wCommandLine : L".\\ghidraRun.bat") ||
+      !SetEnvironmentVariableW(L"GL_ARGS", lpCmdLine)) {
+    ShowError(L"Unable to prepare the command line, error", GetLastError());
+    return EXIT_FAILURE;
+  }
+  if (FAILED(StringCchPrintfW(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /v:on /s /c \"\"!GL_BATCH!\" !GL_ARGS!\"", wApplicationName))) {
+    ShowError(L"Unable to prepare the command line, error", ERROR_FILENAME_EXCED_RANGE);
+    return EXIT_FAILURE;
+  }
 
   // clear STARTUPINFO struct
   ZeroMemory(&lpStartupInfo, sizeof(STARTUPINFOW));
@@ -41,79 +482,50 @@ int APIENTRY wWinMain(
   lpStartupInfo.dwFlags = STARTF_USESHOWWINDOW;
   lpStartupInfo.wShowWindow = SW_HIDE;
 
-  // prepare commandline
-  if (wCommandLine != NULL) {
-    wCommandLine = wmemcpy(wCommandLine, wCommandLineString, sizeof(COMMANDLINE)*2);
-  } else {
-    goto done;
-  }
-
   // create process
-  if (CreateProcessW(
-    NULL,
-    (LPWSTR)wCommandLine,
+  if (!CreateProcessW(
+    wApplicationName,
+    wCommandLine,
     NULL,
     NULL,
     FALSE,
     CREATE_NO_WINDOW,
     NULL,
-    NULL,
+    wDirectory,
     &lpStartupInfo,
     &lpProcessInfo
   )) {
-    DWORD dwError = EXIT_FAILURE;
-
-    // wait for child to infinity and beyond
-    if (dwError = WaitForSingleObject(
-      lpProcessInfo.hProcess,
-      INFINITE
-    ) != WAIT_OBJECT_0) {
-      // terminate child process
-      TerminateProcess(lpProcessInfo.hProcess, dwError);
-      // store error code
-      returnCode = dwError;
-      // bail out
-      goto done;
-    }
-
-    // get child exit code
-    if (GetExitCodeProcess(lpProcessInfo.hProcess, &dwError)) {
-      returnCode = dwError;
-    }
+    ShowError(L"Unable to start cmd.exe, error", GetLastError());
+    return EXIT_FAILURE;
   }
 
-done:
-  if (returnCode != EXIT_SUCCESS) {
-    // allocate memory for error message
-    WCHAR* wErrorMessage = malloc(1024);
+  CloseHandle(lpProcessInfo.hThread);
 
-    // concatenate error message
-    _snwprintf_s(
-      wErrorMessage,
-      512,
-      510,
-      wErrorFormat,
-      GetLastError()
-    );
+  // wait for child to infinity and beyond
+  if (WaitForSingleObject(lpProcessInfo.hProcess, INFINITE) != WAIT_OBJECT_0) {
+    const DWORD dwError = GetLastError();
 
-    // display message box with error message
-    MessageBoxW(
-      NULL,
-      wErrorMessage,
-      wApplicationName,
-      MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND
-    );
-
-    free(wErrorMessage); // give me freedom or give me ...
+    // terminate child process
+    TerminateProcess(lpProcessInfo.hProcess, EXIT_FAILURE);
+    CloseHandle(lpProcessInfo.hProcess);
+    ShowError(L"Unable to wait for ghidraRun.bat, error", dwError);
+    return EXIT_FAILURE;
   }
 
-  if (!CloseHandle(lpProcessInfo.hThread)) {
-    MessageBeep(MB_ICONERROR);
-  }
-  if (!CloseHandle(lpProcessInfo.hProcess)) {
-    MessageBeep(MB_ICONERROR);
+  // get child exit code
+  if (!GetExitCodeProcess(lpProcessInfo.hProcess, &dwExitCode)) {
+    const DWORD dwError = GetLastError();
+
+    CloseHandle(lpProcessInfo.hProcess);
+    ShowError(L"Unable to read the ghidraRun.bat exit code, error", dwError);
+    return EXIT_FAILURE;
   }
 
-  return returnCode; // death ...
+  CloseHandle(lpProcessInfo.hProcess);
+
+  if (dwExitCode != EXIT_SUCCESS) {
+    ShowError(L"ghidraRun.bat exited with code", dwExitCode);
+  }
+
+  return (int)dwExitCode; // death ...
 }
-

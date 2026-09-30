@@ -1,112 +1,121 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- START OF DEFINITIONS -->
-<!-- The name of the application -->
-<?define Name = "Ghidra" ?>
-<!-- The Description of the application -->
-<?define Description = "Launch Ghidra software reverse engineering (SRE) framework by this pretty icon." ?>
-<!-- The manufacturer, for setup of package publisher and folder info -->
-<?define Manufacturer = "Ghidra" ?>
-<!-- The version number of this setup package -->
-<?define Version = "10.1.5" ?>
-<!-- GUIDs -->
-<?define AppGuid = "{B3399059-6E9A-436F-8BE0-F0C0E2DA1ADB}" ?>
-<?define CAppGuid = "{8C6EFB53-61EB-484D-9BC8-A20BB455CA88}" ?>
-<?define RSAppGuid = "{82BBD580-462D-47C4-AAB1-0C0E0DECB45B}" ?>
-<?define StartMenuGuid = "{0D01C72B-5FC9-4CDC-948C-CBA327E75C0A}" ?>
-<?define DesktopGuid = "{50CC12AE-C922-40AA-86B8-4F3E631E92BF}" ?>
-<!-- UpgradeCode must be unique and not changed once the first version of the program is installed. -->
-<?define UpgradeCode = "{E0958D3F-13B8-4707-9E18-D7CBC2625E71}" ?>
-<!-- END OF DEFINITIONS -->
-
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <!-- Installer properties -->
-  <Product Id="$(var.AppGuid)" Name="$(var.Name)" Manufacturer="$(var.Manufacturer)" Version="$(var.Version)" UpgradeCode="$(var.UpgradeCode)" Language="1033">
-    <!-- Installer package properties -->
-    <Package InstallerVersion="301" Compressed="yes" InstallPrivileges="limited" InstallScope="perUser" Manufacturer="$(var.Manufacturer)" />
-    <!-- Application icon -->
-    <Icon Id="Logo.ico" SourceFile="$(var.SolutionDir)\Resources\Ghidra.ico" />
-    <!-- Application logo for Control Panel -->
+<?if $(var.Variant) = C ?>
+  <?define AppGuid = "{8C6EFB53-61EB-484D-9BC8-A20BB455CA88}" ?>
+  <?define PayloadOwnerGuid = "{C2A77A0C-B930-47AA-8D2E-D36A2532298F}" ?>
+<?else?>
+  <?define AppGuid = "{82BBD580-462D-47C4-AAB1-0C0E0DECB45B}" ?>
+  <?define PayloadOwnerGuid = "{D48672D9-631E-42E7-A943-61E411AB5C87}" ?>
+<?endif?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Ghidra Launch" Manufacturer="rpinz" Version="$(var.ReleaseVersion)"
+           UpgradeCode="{E0958D3F-13B8-4707-9E18-D7CBC2625E71}"
+           Language="1033" InstallerVersion="500" Scope="perUser">
+    <SummaryInformation Manufacturer="rpinz" Description="Ghidra Launch" />
+    <Icon Id="Logo.ico" SourceFile="..\Resources\Ghidra.ico" />
     <Property Id="ARPPRODUCTICON" Value="Logo.ico" />
-    <!-- Embed cabinet file in MSI -->
+    <!-- single feature with no options: hide Change in Programs and Features -->
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/rpinz/GhidraLaunch" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/rpinz/GhidraLaunch" />
+    <Property Id="GHIDRALAUNCHVARIANT" Value="$(var.Variant)" />
+    <Property Id="GHIDRALAUNCHOWNER" Value="standalone-$(var.ReleaseVersion)-$(var.Variant)" Secure="yes" />
     <MediaTemplate EmbedCab="yes" />
-    <!-- Allow upgrades and prevent downgrades -->
-    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
-    <!-- Disallow user from installing for all users -->
+    <!-- Remove the incumbent variant first, inside this transaction: the two
+         variants share every resource except the launcher binary and the
+         payload-ownership record, but carry different component GUIDs, so
+         installing before removing would let the outgoing variant's component
+         removal delete what the incoming one just wrote. Scheduling after
+         InstallInitialize keeps the removal transactional, so a later failure
+         rolls the previous version back. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <Property Id="ALLUSERS" Secure="yes" />
-    <Condition Message="Setting the ALLUSERS property is not allowed because [ProductName] is a per-user application. Setup will now exit.">
-      NOT ALLUSERS
-    </Condition>
-    <Feature Id="ProductFeature" Title="$(var.Name)" Level="1">
-      <!-- application launcher component -->
+    <Launch Condition="NOT ALLUSERS"
+            Message="Ghidra Launch is a per-user application; ALLUSERS is not allowed." />
+    <Property Id="WINDOWSBUILD" Secure="yes">
+      <RegistrySearch Id="WindowsBuildSearch" Root="HKLM"
+                      Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentBuildNumber" Type="raw" Bitness="always64" />
+    </Property>
+    <Launch Condition="Installed OR (VersionNT64 AND WINDOWSBUILD >= 17763)"
+            Message="Ghidra Launch requires Windows 10 version 1809 or newer, or Windows 11 (64-bit)." />
+    <Feature Id="ProductFeature" Title="Ghidra Launch" Level="1">
       <ComponentGroupRef Id="LauncherComponents" />
-      <!-- application shortcut for Program Menu -->
       <ComponentRef Id="ApplicationShortcut" />
-      <!-- desktop shortcut component -->
-      <ComponentGroupRef Id="DesktopShortcutComponents" />
+      <ComponentRef Id="DesktopShortcutComponent" />
     </Feature>
-    <UI />
-  </Product>
-
-  <!-- details of installation directory -->
+    <!-- Action text for the basic MSI progress UI. No Template attributes: the
+         steps are reported without the per-file ActionData detail lines. -->
+    <UI>
+      <ProgressText Action="LaunchConditions" Message="Checking installation requirements" />
+      <ProgressText Action="FindRelatedProducts" Message="Searching for an installed version" />
+      <ProgressText Action="MigrateFeatureStates" Message="Reading the installed configuration" />
+      <ProgressText Action="CostInitialize" Message="Computing space requirements" />
+      <ProgressText Action="FileCost" Message="Computing space requirements" />
+      <ProgressText Action="CostFinalize" Message="Computing space requirements" />
+      <ProgressText Action="InstallValidate" Message="Validating install" />
+      <ProgressText Action="GenerateScript" Message="Preparing the installation" />
+      <ProgressText Action="ProcessComponents" Message="Updating component registration" />
+      <ProgressText Action="RemoveExistingProducts" Message="Removing the previous version" />
+      <ProgressText Action="UnpublishFeatures" Message="Unpublishing product features" />
+      <ProgressText Action="UnpublishProduct" Message="Unpublishing product information" />
+      <ProgressText Action="RemoveShortcuts" Message="Removing shortcuts" />
+      <ProgressText Action="RemoveEnvironmentStrings" Message="Updating environment variables" />
+      <ProgressText Action="RemoveRegistryValues" Message="Removing registry values" />
+      <ProgressText Action="RemoveFiles" Message="Removing files" />
+      <ProgressText Action="RemoveFolders" Message="Removing folders" />
+      <ProgressText Action="CreateFolders" Message="Creating folders" />
+      <ProgressText Action="InstallFiles" Message="Copying new files" />
+      <ProgressText Action="CreateShortcuts" Message="Creating shortcuts" />
+      <ProgressText Action="WriteRegistryValues" Message="Writing registry values" />
+      <ProgressText Action="WriteEnvironmentStrings" Message="Updating environment variables" />
+      <ProgressText Action="RegisterUser" Message="Registering user" />
+      <ProgressText Action="RegisterProduct" Message="Registering product" />
+      <ProgressText Action="PublishFeatures" Message="Publishing product features" />
+      <ProgressText Action="PublishProduct" Message="Publishing product information" />
+      <ProgressText Action="Rollback" Message="Rolling back the installation" />
+      <ProgressText Action="RollbackCleanup" Message="Removing backup files" />
+    </UI>
+  </Package>
   <Fragment>
-    <Directory Id="TARGETDIR" Name="SourceDir">
-      <!-- AppData -->
-      <Directory Id="AppDataFolder">
-        <!-- create application folder inside App Data folder -->
-        <Directory Id="INSTALLFOLDER" Name="$(var.Name)">
-          <Directory Id="DesktopFolder" Name="DesktopFolder" />
-        </Directory>
-      </Directory>
-      <!-- create application folder inside Program Menu-->
-      <Directory Id="ProgramMenuFolder">
-        <Directory Id="ApplicationProgramsFolder" Name="$(var.Name)" />
-      </Directory>
-    </Directory>
-  </Fragment>
-
-  <!-- Application Shortcut -->
-  <Fragment>
+    <StandardDirectory Id="DesktopFolder" />
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="Ghidra Launch" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Ghidra Launch" />
+    </StandardDirectory>
     <DirectoryRef Id="ApplicationProgramsFolder">
-      <!-- create application shortcut inside Program Menu -->
-      <Component Id="ApplicationShortcut" Guid="$(var.StartMenuGuid)">
-        <Shortcut Id="ApplicationStartMenuShortcut" Name="$(var.Name)" Description="$(var.Description)" Icon="Logo.ico" Target="[#CLauncherComponent]" WorkingDirectory="INSTALLFOLDER" />
-        <!-- remove application shortcut from Program Menu on uninstall -->
+      <Component Id="ApplicationShortcut" Guid="{0D01C72B-5FC9-4CDC-948C-CBA327E75C0A}">
+        <Shortcut Id="ApplicationStartMenuShortcut" Name="Ghidra Launch" Icon="Logo.ico"
+                  Target="[#LauncherFile]" WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="CleanupProgramsFolder" On="uninstall" />
-        <RegistryValue Id="ApplicationStartMenuRegistry" Name="StartMenuShortcut" Root="HKCU" Key="Software\$(var.Manufacturer)\$(var.Name)" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Name="StartMenuShortcut" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
+                       Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </DirectoryRef>
-  </Fragment>
-
-  <!-- Desktop Shortcut -->
-  <Fragment>
-    <ComponentGroup Id="DesktopShortcutComponents">
-      <!-- Shortcut -->
-      <Component Id="DesktopShortcutComponent" Guid="$(var.DesktopGuid)" Directory="DesktopFolder">
-        <Shortcut Id="LauncherComponentShortcut" Name="$(var.Name)" Description="$(var.Description)" Icon="Logo.ico" Directory="DesktopFolder" Target="[#RSLauncherComponent]" WorkingDirectory="INSTALLFOLDER" />
-        <!-- Remove desktop shortcut on uninstall -->
-        <RemoveFolder Id="CleanupDesktopShortcut" Directory="DesktopFolder" On="uninstall" />
-        <RegistryValue Id="DesktopShortcutRegistry" Name="DesktopShortcut" Root="HKCU" Key="Software\$(var.Manufacturer)\$(var.Name)" Type="integer" Value="1" KeyPath="yes" />
-      </Component>
-    </ComponentGroup>
-  </Fragment>
-
-  <!-- GhidraLaunch -->
-  <Fragment>
+    <Component Id="DesktopShortcutComponent" Guid="{50CC12AE-C922-40AA-86B8-4F3E631E92BF}" Directory="DesktopFolder">
+      <Shortcut Id="LauncherComponentShortcut" Name="Ghidra Launch" Icon="Logo.ico"
+                Target="[#LauncherFile]" WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Name="DesktopShortcut" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
     <ComponentGroup Id="LauncherComponents" Directory="INSTALLFOLDER">
-      <Component Id="LauncherComponent" Guid="$(var.AppGuid)">
+      <Component Id="LauncherComponent" Guid="{B3399059-6E9A-436F-8BE0-F0C0E2DA1ADB}">
         <CreateFolder />
         <RemoveFolder Id="RemoveINSTALLFOLDER" On="uninstall" />
-        <RegistryValue Id="LauncherComponent" Name="Ghidra" Root="HKCU" Key="Software\$(var.Manufacturer)\$(var.Name)" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Name="Ghidra" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
+                       Type="integer" Value="1" KeyPath="yes" />
+        <Environment Id="GhidraHomeEnv" Name="GHIDRA_HOME" Value="[INSTALLFOLDER]Ghidra"
+                     Permanent="no" Part="all" Action="set" System="no" />
       </Component>
-      <Component Id="CLauncherComponent" Guid="$(var.CAppGuid)">
-        <File Id="CLauncherComponent" Name="$(var.GhidraLaunchC.TargetFileName)" Source="$(var.GhidraLaunchC.TargetPath)" Checksum="yes" />
-        <RemoveFile Id="CLauncherComponent" Name="$(var.GhidraLaunchC.TargetFileName)" On="both" />
-        <RegistryValue Id="CLauncherComponent" Name="$(var.GhidraLaunchC.TargetFileName)" Root="HKCU" Key="Software\$(var.Manufacturer)\$(var.Name)" Type="integer" Value="1" KeyPath="yes" />
+      <Component Id="PayloadOwnerComponent" Guid="$(var.PayloadOwnerGuid)">
+        <RegistryValue Name="PayloadOwner" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
+                       Type="string" Value="[GHIDRALAUNCHOWNER]" KeyPath="yes" />
       </Component>
-      <Component Id="RSLauncherComponent" Guid="$(var.RSAppGuid)">
-        <File Id="RSLauncherComponent" Name="$(var.GhidraLaunchRS.TargetFileName)" Source="$(var.GhidraLaunchRS.TargetPath)" Checksum="yes" />
-        <RemoveFile Id="RSLauncherComponent" Name="$(var.GhidraLaunchRS.TargetFileName)" On="both" />
-        <RegistryValue Id="RSLauncherComponent" Name="$(var.GhidraLaunchRS.TargetFileName)" Root="HKCU" Key="Software\$(var.Manufacturer)\$(var.Name)" Type="integer" Value="1" KeyPath="yes" />
+      <Component Id="LauncherBinary" Guid="$(var.AppGuid)">
+        <File Id="LauncherFile" Name="$(var.LauncherName)" Source="$(var.LauncherPath)" Checksum="yes" />
+        <RegistryValue Name="$(var.LauncherName)" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
+                       Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

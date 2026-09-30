@@ -1,0 +1,28 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Bundle Name="Ghidra Launch" Manufacturer="rpinz" Version="1.0.0"
+          UpgradeCode="{DFE05126-B29E-4298-A06B-63F833BC0BF8}">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense"
+          LicenseUrl="https://unlicense.org/" SuppressRepair="yes" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage SourceFile="$(var.LauncherMsi)" Compressed="yes">
+        <MsiProperty Name="GHIDRALAUNCHOWNER" Value="[WixBundleProviderKey]" />
+      </MsiPackage>
+      <ExePackage SourceFile="$(var.Helper)" Compressed="yes" PerMachine="no"
+                  InstallArguments='extract "Ghidra.zip" "[LocalAppDataFolder]Ghidra Launch\Ghidra" "[WixBundleProviderKey]"'
+                  UninstallArguments='remove "[LocalAppDataFolder]Ghidra Launch\Ghidra" "Ghidra.zip" "[WixBundleProviderKey]"'
+                  DetectCondition="PayloadPresent AND PayloadOwner = WixBundleProviderKey">
+        <Payload Name="Ghidra.zip" SourceFile="$(var.PayloadRoot)\Ghidra.zip"
+                 Compressed="no" DownloadUrl="https://example.invalid/Ghidra.zip" />
+      </ExePackage>
+    </Chain>
+    <util:FileSearch Variable="PayloadPresent"
+                     Path="[LocalAppDataFolder]Ghidra Launch\Ghidra\.ghidralaunch-source.sha256"
+                     Result="exists" />
+    <util:RegistrySearch Variable="PayloadOwner" Root="HKCU"
+                         Key="Software\rpinz\Ghidra Launch" Value="PayloadOwner" Result="value" />
+  </Bundle>
+</Wix>

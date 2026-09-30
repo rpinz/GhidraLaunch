@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["GhidraLaunchRS", "GhidraLaunchGhidraHelperRS"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+license = "Unlicense"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# Pedantic includes cast_possible_truncation, cast_sign_loss and cast_possible_wrap.
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+
+# Profiles must live in the workspace root; member [profile] sections are ignored.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+# Overflow is a bug in a launcher/extractor; abort rather than wrap silently.
+overflow-checks = true
+# Line tables and a packed PDB beside the executable, matching the C Release PDBs. On MSVC
+# debug information lives only in the PDB, so the shipped executable stays small.
+debug = "limited"
+split-debuginfo = "packed"
+strip = "none"

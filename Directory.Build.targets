@@ -1,0 +1,14 @@
+<Project>
+  <!-- WiX's timestamp inputs do not include preprocessor constants. -->
+  <Target Name="TrackWixBuildParameters" BeforeTargets="CoreCompile"
+          Condition="'$(MSBuildProjectExtension)' == '.wixproj'">
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <WriteLinesToFile File="$(IntermediateOutputPath)BuildParameters.txt"
+                      Lines="$(DefineConstants);InstallerPlatform=$(InstallerPlatform)"
+                      Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <Content Include="$(IntermediateOutputPath)BuildParameters.txt" />
+      <FileWrites Include="$(IntermediateOutputPath)BuildParameters.txt" />
+    </ItemGroup>
+  </Target>
+</Project>

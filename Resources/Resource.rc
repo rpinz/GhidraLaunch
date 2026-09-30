@@ -54,6 +54,23 @@ END
 // remains consistent on all systems.
 IDI_ICON1               ICON                    "..\\Resources\\Ghidra.ico"
 
+#include "Version.h"
+
+// GhidraLaunchRS/build.rs defines GHIDRA_LAUNCH_RS when compiling the Rust launcher
+#ifdef GHIDRA_LAUNCH_RS
+#define GHIDRA_LAUNCH_INTERNAL_NAME "GhidraLaunchRS"
+#define GHIDRA_LAUNCH_ORIGINAL_FILENAME "GhidraLaunchRS.exe"
+#else
+#define GHIDRA_LAUNCH_INTERNAL_NAME "GhidraLaunchC"
+#define GHIDRA_LAUNCH_ORIGINAL_FILENAME "GhidraLaunchC.exe"
+#endif
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Manifest
+//
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "..\\Resources\\application.manifest"
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -61,8 +78,8 @@ IDI_ICON1               ICON                    "..\\Resources\\Ghidra.ico"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,0,0,1
- PRODUCTVERSION 0,0,0,1
+ FILEVERSION GHIDRA_LAUNCH_FILEVERSION
+ PRODUCTVERSION GHIDRA_LAUNCH_FILEVERSION
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -77,14 +94,14 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "GhidraLaunch"
+            VALUE "CompanyName", "rpinz"
             VALUE "FileDescription", "Launch Ghidra ghidraRun.bat without console window"
-            VALUE "FileVersion", "0.0.0.1"
-            VALUE "InternalName", "GhidraLaunch.exe"
-            VALUE "LegalCopyright", "Copyright (C) 2022"
-            VALUE "OriginalFilename", "GhidraLaunch.exe"
-            VALUE "ProductName", "GhidraLaunch"
-            VALUE "ProductVersion", "0.0.0.1"
+            VALUE "FileVersion", GHIDRA_LAUNCH_VERSION
+            VALUE "InternalName", GHIDRA_LAUNCH_INTERNAL_NAME
+            VALUE "LegalCopyright", "The Unlicense"
+            VALUE "OriginalFilename", GHIDRA_LAUNCH_ORIGINAL_FILENAME
+            VALUE "ProductName", "Ghidra Launch"
+            VALUE "ProductVersion", GHIDRA_LAUNCH_PRODUCT_VERSION
         END
     END
     BLOCK "VarFileInfo"
@@ -107,4 +124,3 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED
-
