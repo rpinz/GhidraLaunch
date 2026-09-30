@@ -44,6 +44,7 @@ int APIENTRY wWinMain(
   static WCHAR wGhidraDirectory[PATH_SIZE];
   static WCHAR wApplicationName[PATH_SIZE];
   static WCHAR wCommandLine[PATH_SIZE];
+  static WCHAR wEscapedPath[PATH_SIZE];
   STARTUPINFOW lpStartupInfo;
   PROCESS_INFORMATION lpProcessInfo;
   WCHAR* wSeparator;
@@ -55,7 +56,7 @@ int APIENTRY wWinMain(
   UNREFERENCED_PARAMETER(lpCmdLine);
   UNREFERENCED_PARAMETER(nShowCmd);
 
-  // directory containing this launcher, ghidraRun.bat lives next to it
+  // directory containing this launcher, used when GHIDRA_HOME is unset
   dwLength = GetModuleFileNameW(NULL, wDirectory, _countof(wDirectory));
   if (dwLength == 0 || dwLength >= _countof(wDirectory)) {
     ShowError(L"Unable to locate the launcher, error", GetLastError());
@@ -89,11 +90,6 @@ int APIENTRY wWinMain(
     ShowError(L"ghidraRun.bat not found in GHIDRA_HOME or next to the launcher, error", ERROR_FILE_NOT_FOUND);
     return EXIT_FAILURE;
   }
-  if (!SetEnvironmentVariableW(L"GHIDRALAUNCH_BATCH_PATH", wCommandLine)) {
-    ShowError(L"Unable to prepare ghidraRun.bat path, error", GetLastError());
-    return EXIT_FAILURE;
-  }
-
   // absolute path to cmd.exe, never resolved through the search path
   dwLength = GetSystemDirectoryW(wApplicationName, _countof(wApplicationName));
   if (dwLength == 0 || dwLength >= _countof(wApplicationName)) {
@@ -105,8 +101,35 @@ int APIENTRY wWinMain(
     return EXIT_FAILURE;
   }
 
-  // expand the batch path once so literal percent signs survive cmd.exe, /d skips AutoRun
-  if (swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /v:off /c \"\"%%GHIDRALAUNCH_BATCH_PATH%%\"\"", wApplicationName) < 0) {
+  // cmd.exe cannot use a UNC working directory; insert its percent signs after cmd's percent-expansion pass
+  if (wcsncmp(wDirectory, L"\\\\", 2) == 0 && wcschr(wDirectory, L'%') != NULL) {
+    WCHAR* wOut = wEscapedPath;
+    for (const WCHAR* wIn = wCommandLine; *wIn != L'\0'; ++wIn) {
+      const WCHAR* wReplacement = *wIn == L'%' ? L"!GL_P!" :
+                                  *wIn == L'!' ? L"!GL_B!" :
+                                  *wIn == L'^' ? L"!GL_C!" : NULL;
+      const size_t length = wReplacement == NULL ? 1 : wcslen(wReplacement);
+      if ((size_t)(wOut - wEscapedPath) + length >= _countof(wEscapedPath)) {
+        ShowError(L"Unable to prepare the command line, error", ERROR_FILENAME_EXCED_RANGE);
+        return EXIT_FAILURE;
+      }
+      wmemcpy(wOut, wReplacement == NULL ? wIn : wReplacement, length);
+      wOut += length;
+    }
+    *wOut = L'\0';
+    if (!SetEnvironmentVariableW(L"GL_P", L"%") ||
+        !SetEnvironmentVariableW(L"GL_B", L"!") ||
+        !SetEnvironmentVariableW(L"GL_C", L"^")) {
+      ShowError(L"Unable to prepare the command line, error", GetLastError());
+      return EXIT_FAILURE;
+    }
+    dwLength = swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /v:on /c \"\"%ls\"\"", wApplicationName, wEscapedPath);
+  } else if (wcsncmp(wDirectory, L"\\\\", 2) == 0) {
+    dwLength = swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c \"\"%ls\\%ls\"\"", wApplicationName, wDirectory, BATCH_FILE);
+  } else {
+    dwLength = swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c \"\".\\%ls\"\"", wApplicationName, BATCH_FILE);
+  }
+  if (dwLength == (DWORD)-1) {
     ShowError(L"Unable to prepare the command line, error", ERROR_FILENAME_EXCED_RANGE);
     return EXIT_FAILURE;
   }

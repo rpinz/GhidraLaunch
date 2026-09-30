@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::fmt::Display;
 use std::io;
 use std::iter::once;
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{exit, Command};
@@ -98,13 +98,36 @@ fn launch() -> i32 {
         Err(error) => return fail("Unable to locate cmd.exe, error", error),
     };
 
-    // expand the batch path once so literal percent signs survive cmd.exe, /d skips AutoRun
-    let arguments = "/d /v:off /c \"\"%GHIDRALAUNCH_BATCH_PATH%\"\"";
+    // cmd.exe cannot use a UNC working directory; local paths stay out of its command text
+    let mut arguments = OsString::from("/d /c \"\"");
+    let unc = directory.to_string_lossy().starts_with(r"\\");
+    let percent = directory.as_os_str().encode_wide().any(|unit| unit == b'%' as u16);
+    if unc && percent {
+        arguments = OsString::from("/d /v:on /c \"\"");
+        // delayed expansion inserts these characters after cmd's percent-expansion pass
+        for unit in directory.join(BATCH_FILE).as_os_str().encode_wide() {
+            match unit {
+                x if x == b'%' as u16 => arguments.push("!GL_P!"),
+                x if x == b'!' as u16 => arguments.push("!GL_B!"),
+                x if x == b'^' as u16 => arguments.push("!GL_C!"),
+                _ => arguments.push(OsString::from_wide(&[unit])),
+            }
+        }
+    } else if unc {
+        arguments.push(directory.join(BATCH_FILE));
+    } else {
+        arguments.push(r".\");
+        arguments.push(BATCH_FILE);
+    }
+    arguments.push("\"\"");
 
     // create process and wait for child to infinity and beyond
-    let status = Command::new(cmd)
+    let mut command = Command::new(cmd);
+    if unc && percent {
+        command.env("GL_P", "%").env("GL_B", "!").env("GL_C", "^");
+    }
+    let status = command
         .raw_arg(arguments)
-        .env("GHIDRALAUNCH_BATCH_PATH", directory.join(BATCH_FILE))
         .current_dir(&directory)
         .creation_flags(CREATE_NO_WINDOW)
         .status();
