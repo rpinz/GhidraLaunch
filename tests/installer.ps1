@@ -10,9 +10,9 @@ function Read-Rows($sql, $columns) {
     $result = @()
     try {
         while ($record = $view.Fetch()) {
-            $row = @()
-            for ($i = 1; $i -le $columns; $i++) { $row += $record.StringData($i) }
-            $result += ,$row
+            $row = @{}
+            for ($i = 1; $i -le $columns; $i++) { $row["Column$i"] = $record.StringData($i) }
+            $result += [pscustomobject]$row
         }
     } finally {
         $view.Close()
@@ -24,9 +24,9 @@ $files = @(Read-Rows 'SELECT `File`.`FileName`, `Component`.`Directory_` FROM `F
 $expected = @('GhidraLaunchC.exe', 'GhidraLaunchRS.exe')
 $locations = @{}
 foreach ($file in $files) {
-    $name = ($file[0] -split '\|')[-1]
+    $name = ($file.Column1 -split '\|')[-1]
     if ($name -ieq 'ghidraRun.bat') { throw 'MSI unexpectedly contains Ghidra' }
-    if ($expected -contains $name) { $locations[$name] = $file[1] }
+    if ($expected -contains $name) { $locations[$name] = $file.Column2 }
 }
 foreach ($name in $expected) {
     if (-not $locations.ContainsKey($name)) { throw "MSI does not install $name" }
@@ -35,9 +35,14 @@ foreach ($name in $expected) {
     }
 }
 
-$directory = @(Read-Rows 'SELECT `Directory_Parent`, `DefaultDir` FROM `Directory` WHERE `Directory` = ''INSTALLFOLDER''' 2)
-if ($directory.Count -ne 1 -or $directory[0][0] -ne 'LocalAppDataFolder' -or
-    ($directory[0][1] -split '\|')[-1] -ne 'Ghidra Launch') {
+$directoryRows = @(Read-Rows 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' 3 |
+    Where-Object { $_.Column1 -eq 'INSTALLFOLDER' })
+if ($directoryRows.Count -ne 1) {
+    throw "MSI does not contain exactly one INSTALLFOLDER directory row (found $($directoryRows.Count))"
+}
+$installDirectory = $directoryRows[0]
+if ($installDirectory.Column2 -ne 'LocalAppDataFolder' -or
+    ($installDirectory.Column3 -split '\|')[-1] -ne 'Ghidra Launch') {
     throw 'MSI installation directory differs from the advertised per-user layout'
 }
 
