@@ -89,6 +89,10 @@ int APIENTRY wWinMain(
     ShowError(L"ghidraRun.bat not found in GHIDRA_HOME or next to the launcher, error", ERROR_FILE_NOT_FOUND);
     return EXIT_FAILURE;
   }
+  if (!SetEnvironmentVariableW(L"GHIDRALAUNCH_BATCH_PATH", wCommandLine)) {
+    ShowError(L"Unable to prepare ghidraRun.bat path, error", GetLastError());
+    return EXIT_FAILURE;
+  }
 
   // absolute path to cmd.exe, never resolved through the search path
   dwLength = GetSystemDirectoryW(wApplicationName, _countof(wApplicationName));
@@ -101,8 +105,8 @@ int APIENTRY wWinMain(
     return EXIT_FAILURE;
   }
 
-  // prepare commandline with an absolute batch path so UNC directories work, /d skips cmd.exe AutoRun commands
-  if (swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c \"\"%ls\\%ls\"\"", wApplicationName, wDirectory, BATCH_FILE) < 0) {
+  // expand the batch path once so literal percent signs survive cmd.exe, /d skips AutoRun
+  if (swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /v:off /c \"\"%%GHIDRALAUNCH_BATCH_PATH%%\"\"", wApplicationName) < 0) {
     ShowError(L"Unable to prepare the command line, error", ERROR_FILENAME_EXCED_RANGE);
     return EXIT_FAILURE;
   }

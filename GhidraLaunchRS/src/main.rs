@@ -98,14 +98,13 @@ fn launch() -> i32 {
         Err(error) => return fail("Unable to locate cmd.exe, error", error),
     };
 
-    // absolute batch path so UNC directories work, /d skips cmd.exe AutoRun commands
-    let mut arguments = OsString::from("/d /c \"\"");
-    arguments.push(directory.join(BATCH_FILE));
-    arguments.push("\"\"");
+    // expand the batch path once so literal percent signs survive cmd.exe, /d skips AutoRun
+    let arguments = "/d /v:off /c \"\"%GHIDRALAUNCH_BATCH_PATH%\"\"";
 
     // create process and wait for child to infinity and beyond
     let status = Command::new(cmd)
         .raw_arg(arguments)
+        .env("GHIDRALAUNCH_BATCH_PATH", directory.join(BATCH_FILE))
         .current_dir(&directory)
         .creation_flags(CREATE_NO_WINDOW)
         .status();
