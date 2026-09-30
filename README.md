@@ -12,10 +12,13 @@ updating dependencies. Visual Studio Rebuild cleans and rebuilds the Rust
 launcher.
 
 The installer projects additionally require WiX Toolset v3.11 or newer v3
-build tools. Run `download.sh` from a shell with Bash, curl, jq, and unzip to
-obtain the Ghidra and Temurin files needed by the setup bundle. The CI workflow
-builds and rebuilds the launchers on Windows in both configurations; it does
-not assemble the installer or download third-party binaries.
+build tools. Run `download.sh` (Bash, curl, jq, unzip) or `download.ps1` to
+obtain the verified Ghidra and Temurin files. The scripts stage the Ghidra
+release in `GhidraLaunchInstaller/Ghidra` so the MSI installs `ghidraRun.bat`
+beside both launchers. Build the MSI and then the setup bundle after downloading.
+CI runs launcher checks and builds a fixture MSI to verify its layout without
+downloading third-party release binaries; release bundles still require the
+verified Temurin MSI.
 
 ## Signing releases
 

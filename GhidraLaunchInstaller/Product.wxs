@@ -39,6 +39,7 @@
     <Feature Id="ProductFeature" Title="$(var.Name)" Level="1">
       <!-- application launcher component -->
       <ComponentGroupRef Id="LauncherComponents" />
+      <ComponentGroupRef Id="GhidraFiles" />
       <!-- application shortcut for Program Menu -->
       <ComponentRef Id="ApplicationShortcut" />
       <!-- desktop shortcut component -->
