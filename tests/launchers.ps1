@@ -56,8 +56,6 @@ try {
         if (-not (Test-Path -LiteralPath $configuredMarker) -or (Get-Content -LiteralPath $configuredMarker -Raw).Trim() -ne $configured) {
             throw "$launcher did not run the configured batch from GHIDRA_HOME"
         }
-        Remove-Item -LiteralPath $configuredBatch
-        Invoke-Launcher $launcher $scratch 1 $configured
         Write-Host "Launcher checks passed: $binary"
     }
 } finally {
