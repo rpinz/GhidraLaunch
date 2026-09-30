@@ -52,8 +52,33 @@ try {
 }
 
 $asset = $ghidra.assets | Where-Object { $_.name -cmatch '^ghidra_.*_PUBLIC_[0-9]+\.zip$' } | Select-Object -First 1
-$checksumMatch = [regex]::Match([string]$ghidra.body, 'SHA-256:[^0-9a-f]*([0-9a-f]{64})', 'IgnoreCase')
-$ghidraChecksum = if ($checksumMatch.Success) { $checksumMatch.Groups[1].Value } else { $null }
+$ghidraChecksum = $null
+if ($asset.digest) {
+    if ($asset.digest -match '^sha256:([0-9a-f]{64})$') {
+        $ghidraChecksum = $Matches[1]
+    }
+} elseif ($asset) {
+    $pattern = 'SHA-256:[^0-9a-f]*([0-9a-f]{64})(?![0-9a-f])'
+    $allHashes = @([regex]::Matches([string]$ghidra.body, $pattern, 'IgnoreCase'))
+    $namePattern = '(^|[^A-Za-z0-9_.-])' + [regex]::Escape($asset.name) + '($|[^A-Za-z0-9_.-])'
+    $namedHashes = @(
+        foreach ($line in ([string]$ghidra.body -split '\r?\n')) {
+            if ($line -match $namePattern) {
+                foreach ($hash in [regex]::Matches($line, $pattern, 'IgnoreCase')) {
+                    $hash
+                }
+            }
+        }
+    )
+    if ($namedHashes.Count -eq 1) {
+        $ghidraChecksum = $namedHashes[0].Groups[1].Value
+    } elseif ($namedHashes.Count -eq 0 -and $allHashes.Count -eq 1 -and
+              @([string]$ghidra.body -split '\r?\n' | Where-Object {
+                  $_ -match $pattern -and $_ -notmatch '[A-Za-z0-9_-]+\.(zip|msi|exe|tar|gz|7z)([^A-Za-z0-9_.-]|$)'
+              }).Count -eq 1) {
+        $ghidraChecksum = $allHashes[0].Groups[1].Value
+    }
+}
 
 if (Download-Verified 'Latest Ghidra' $asset.browser_download_url $ghidraChecksum $ghidraZip) {
     try {

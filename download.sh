@@ -55,9 +55,27 @@ rm -f "${versions_file}"
 
 # Ghidra release zip, checksum published in the release notes
 ghidra_json="$(curl --silent --show-error --fail --header "Accept: application/vnd.github+json" "${GHIDRA_API}")" || ghidra_json="{}"
+ghidra_asset="$(jq -c '[.assets[]? | select(.name | test("^ghidra_.*_PUBLIC_[0-9]+\\.zip$"))][0] // {}' <<<"${ghidra_json}")"
+ghidra_checksum="$(jq -r --argjson asset "${ghidra_asset}" '
+  def hashes: [match("SHA-256:[^0-9a-f]*([0-9a-f]{64})(?![0-9a-f])"; "ig") | .captures[0].string];
+  if ($asset.digest // "") != "" then
+    if ($asset.digest | test("^sha256:[0-9a-f]{64}$"; "i")) then $asset.digest[7:] else empty end
+  else
+    (.body // "") as $body
+    | ($body | hashes) as $all
+    | ($asset.name // "" | gsub("[.]"; "[.]")) as $name
+    | ([$body | split("\n")[] | select(test("(^|[^A-Za-z0-9_.-])" + $name + "($|[^A-Za-z0-9_.-])")) | hashes[]]) as $named
+    | if ($named | length) == 1 then $named[0]
+      elif ($named | length) == 0 and ($all | length) == 1
+        and ([$body | split("\n")[] | select(hashes | length > 0)
+              | select(test("[A-Za-z0-9_-]+[.](zip|msi|exe|tar|gz|7z)([^A-Za-z0-9_.-]|$)"; "i") | not)] | length) == 1
+      then $all[0]
+      else empty end
+  end
+' <<<"${ghidra_json}")"
 if download "Latest Ghidra" \
-  "$(jq -r '[.assets[]? | select(.name | test("^ghidra_.*_PUBLIC_[0-9]+\\.zip$"))][0].browser_download_url // empty' <<<"${ghidra_json}")" \
-  "$(jq -r '.body // empty' <<<"${ghidra_json}" | grep -oiE 'SHA-256:[^0-9a-f]*[0-9a-f]{64}' | grep -oiE '[0-9a-f]{64}' | head -n 1 || true)" \
+  "$(jq -r '.browser_download_url // empty' <<<"${ghidra_asset}")" \
+  "${ghidra_checksum}" \
   "Ghidra.zip"; then
   ghidra_downloaded=1
 else
