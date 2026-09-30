@@ -29,7 +29,7 @@ static void ShowError(const WCHAR* const wMessage, const DWORD dwCode) {
     NULL,
     wErrorMessage,
     APPLICATION_NAME,
-    MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND
+    MB_ICONERROR | MB_SYSTEMMODAL | MB_SETFOREGROUND
   );
 }
 

@@ -13,8 +13,9 @@ use std::path::PathBuf;
 use std::process::{exit, Command};
 use windows_sys::{
     Win32::System::SystemInformation::GetSystemDirectoryW,
-    Win32::System::Threading::CREATE_NO_WINDOW,
-    Win32::UI::WindowsAndMessaging::MessageBoxW, Win32::UI::WindowsAndMessaging::MB_DEFAULT_DESKTOP_ONLY, Win32::UI::WindowsAndMessaging::MB_ICONERROR, Win32::UI::WindowsAndMessaging::MB_SETFOREGROUND, Win32::UI::WindowsAndMessaging::MB_SYSTEMMODAL,
+    Win32::System::Threading::CREATE_NO_WINDOW, Win32::UI::WindowsAndMessaging::MessageBoxW,
+    Win32::UI::WindowsAndMessaging::MB_ICONERROR, Win32::UI::WindowsAndMessaging::MB_SETFOREGROUND,
+    Win32::UI::WindowsAndMessaging::MB_SYSTEMMODAL,
 };
 
 // constant values
@@ -40,7 +41,7 @@ fn show_error(message: &str, code: impl Display) {
             std::ptr::null_mut(),
             text.as_ptr(),
             caption.as_ptr(),
-            MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND,
+            MB_ICONERROR | MB_SYSTEMMODAL | MB_SETFOREGROUND,
         );
     }
 }
