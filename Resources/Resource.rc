@@ -81,7 +81,7 @@ BEGIN
             VALUE "FileDescription", "Launch Ghidra ghidraRun.bat without console window"
             VALUE "FileVersion", "0.0.0.1"
             VALUE "InternalName", "GhidraLaunch.exe"
-            VALUE "LegalCopyright", "Copyright (C) 2022"
+            VALUE "LegalCopyright", "The Unlicense"
             VALUE "OriginalFilename", "GhidraLaunch.exe"
             VALUE "ProductName", "GhidraLaunch"
             VALUE "ProductVersion", "0.0.0.1"
