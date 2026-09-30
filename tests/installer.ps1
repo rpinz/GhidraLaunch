@@ -21,15 +21,16 @@ function Read-Rows($sql, $columns) {
 }
 
 $files = @(Read-Rows 'SELECT `File`.`FileName`, `Component`.`Directory_` FROM `File`, `Component` WHERE `File`.`Component_` = `Component`.`Component`' 2)
-$expected = @('GhidraLaunchC.exe', 'GhidraLaunchRS.exe', 'ghidraRun.bat', 'fixture.txt')
+$expected = @('GhidraLaunchC.exe', 'GhidraLaunchRS.exe')
 $locations = @{}
 foreach ($file in $files) {
     $name = ($file[0] -split '\|')[-1]
+    if ($name -ieq 'ghidraRun.bat') { throw 'MSI unexpectedly contains Ghidra' }
     if ($expected -contains $name) { $locations[$name] = $file[1] }
 }
 foreach ($name in $expected) {
     if (-not $locations.ContainsKey($name)) { throw "MSI does not install $name" }
-    if ($name -ne 'fixture.txt' -and $locations[$name] -ne 'INSTALLFOLDER') {
+    if ($locations[$name] -ne 'INSTALLFOLDER') {
         throw "MSI installs $name outside INSTALLFOLDER"
     }
 }
@@ -51,4 +52,4 @@ if ($names.Count -ne 2 -or
     throw 'Bundle does not chain the Temurin and launcher MSIs'
 }
 
-Write-Host 'MSI installs both launchers and ghidraRun.bat side by side; bundle references the MSI.'
+Write-Host 'MSI installs both launchers, not Ghidra; bundle references the MSI.'

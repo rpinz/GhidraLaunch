@@ -399,5 +399,4 @@ FodyWeavers.xsd
 
 *.zip
 Ghidra/***
-GhidraLaunchInstaller/Ghidra/***
 GhidraLaunchSetup/Versions.wxi

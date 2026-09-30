@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::fmt::Display;
 use std::io;
 use std::iter::once;
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{exit, Command};
@@ -71,19 +71,25 @@ fn system_directory() -> io::Result<PathBuf> {
 
 // launch ghidraRun.bat and return the exit code
 fn launch() -> i32 {
-    // directory containing this launcher, ghidraRun.bat lives next to it
+    // use GHIDRA_HOME when set, otherwise look next to the launcher
     let executable = match env::current_exe() {
         Ok(executable) => executable,
         Err(error) => return fail("Unable to locate the launcher, error", error),
     };
     let directory = match executable.parent() {
-        Some(directory) => directory,
+        Some(directory) => env::var_os("GHIDRA_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| directory.to_path_buf()),
         None => return fail("Unable to locate the launcher, error", io::Error::from_raw_os_error(ERROR_BAD_PATHNAME)),
     };
 
     // make sure ghidraRun.bat exists before starting anything
     if !directory.join(BATCH_FILE).is_file() {
-        return fail("ghidraRun.bat not found next to the launcher, error", io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND));
+        return fail(
+            "ghidraRun.bat not found in GHIDRA_HOME or next to the launcher, error",
+            io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND),
+        );
     }
 
     // absolute path to cmd.exe, never resolved through the search path
@@ -92,15 +98,37 @@ fn launch() -> i32 {
         Err(error) => return fail("Unable to locate cmd.exe, error", error),
     };
 
-    // absolute batch path so UNC directories work, /d skips cmd.exe AutoRun commands
+    // cmd.exe cannot use a UNC working directory; local paths stay out of its command text
     let mut arguments = OsString::from("/d /c \"\"");
-    arguments.push(directory.join(BATCH_FILE));
+    let unc = directory.to_string_lossy().starts_with(r"\\");
+    let percent = directory.as_os_str().encode_wide().any(|unit| unit == b'%' as u16);
+    if unc && percent {
+        arguments = OsString::from("/d /v:on /c \"\"");
+        // delayed expansion inserts these characters after cmd's percent-expansion pass
+        for unit in directory.join(BATCH_FILE).as_os_str().encode_wide() {
+            match unit {
+                x if x == b'%' as u16 => arguments.push("!GL_P!"),
+                x if x == b'!' as u16 => arguments.push("!GL_B!"),
+                x if x == b'^' as u16 => arguments.push("!GL_C!"),
+                _ => arguments.push(OsString::from_wide(&[unit])),
+            }
+        }
+    } else if unc {
+        arguments.push(directory.join(BATCH_FILE));
+    } else {
+        arguments.push(r".\");
+        arguments.push(BATCH_FILE);
+    }
     arguments.push("\"\"");
 
     // create process and wait for child to infinity and beyond
-    let status = Command::new(cmd)
+    let mut command = Command::new(cmd);
+    if unc && percent {
+        command.env("GL_P", "%").env("GL_B", "!").env("GL_C", "^");
+    }
+    let status = command
         .raw_arg(arguments)
-        .current_dir(directory)
+        .current_dir(&directory)
         .creation_flags(CREATE_NO_WINDOW)
         .status();
 

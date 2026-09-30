@@ -52,7 +52,6 @@ ghidra_downloaded=0
 java_version=""
 versions_file="GhidraLaunchSetup/Versions.wxi"
 rm -f "${versions_file}"
-rm -rf GhidraLaunchInstaller/Ghidra
 
 # Ghidra release zip, checksum published in the release notes
 ghidra_json="$(curl --silent --show-error --fail --header "Accept: application/vnd.github+json" "${GHIDRA_API}")" || ghidra_json="{}"
@@ -88,17 +87,7 @@ if [[ "${ghidra_downloaded}" -eq 1 ]]; then
 fi
 
 if [[ "${status}" -eq 0 ]]; then
-  # Stage the verified Ghidra release for WiX to install beside the launchers.
-  staging="$(mktemp -d)"
-  root="$(unzip -Z1 Ghidra.zip | awk '/^[^/]+\/ghidraRun\.bat$/ { sub(/\/ghidraRun\.bat$/, ""); print; exit }')" || root=""
-  if [[ -z "${root}" ]] || ! unzip -q Ghidra.zip -d "${staging}" || [[ ! -f "${staging}/${root}/ghidraRun.bat" ]]; then
-    echo "Ghidra archive does not contain a usable ghidraRun.bat"
-    status=1
-  else
-    mv "${staging}/${root}" GhidraLaunchInstaller/Ghidra
-    printf '<?define JavaVersion = "%s" ?>\n' "${java_version}" > "${versions_file}"
-  fi
-  rm -rf "${staging}"
+  printf '<?define JavaVersion = "%s" ?>\n' "${java_version}" > "${versions_file}"
 fi
 
 exit "${status}"

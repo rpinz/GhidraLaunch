@@ -20,12 +20,8 @@
     <CompilerAdditionalOptions>
     </CompilerAdditionalOptions>
   </PropertyGroup>
-  <PropertyGroup>
-    <DefineConstants>$(DefineConstants);GhidraSource=$(MSBuildProjectDirectory)\Ghidra</DefineConstants>
-  </PropertyGroup>
   <ItemGroup>
     <Compile Include="Product.wxs" />
-    <Compile Include="$(IntermediateOutputPath)GhidraFiles.wxs" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\Resources\Ghidra.ico">
@@ -56,11 +52,6 @@
   </ItemGroup>
   <Import Project="$(WixTargetsPath)" Condition=" '$(WixTargetsPath)' != '' " />
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\WiX\v3.x\Wix.targets" Condition=" '$(WixTargetsPath)' == '' AND Exists('$(MSBuildExtensionsPath32)\Microsoft\WiX\v3.x\Wix.targets') " />
-  <Target Name="HarvestGhidra" BeforeTargets="Compile">
-    <Error Condition="!Exists('$(MSBuildProjectDirectory)\Ghidra\ghidraRun.bat')" Text="Extract the verified Ghidra.zip into GhidraLaunchInstaller\Ghidra before building the MSI." />
-    <MakeDir Directories="$(IntermediateOutputPath)" />
-    <Exec Command="&quot;$(WixToolPath)heat.exe&quot; dir &quot;$(MSBuildProjectDirectory)\Ghidra&quot; -cg GhidraFiles -dr INSTALLFOLDER -srd -ag -sfrag -sreg -var var.GhidraSource -out &quot;$(IntermediateOutputPath)GhidraFiles.wxs&quot;" />
-  </Target>
   <Target Name="EnsureWixToolsetInstalled" Condition=" '$(WixTargetsImported)' != 'true' ">
     <Error Text="The WiX Toolset v3.11 (or newer) build tools must be installed to build this project. To download the WiX Toolset, see http://wixtoolset.org/releases/" />
   </Target>

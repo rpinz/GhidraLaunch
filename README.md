@@ -2,6 +2,29 @@
 
 Windows launchers for `ghidraRun.bat`, with a WiX installer and setup bundle.
 
+## Install and launch
+
+Ghidra is a **separate prerequisite**: the setup bundle installs Temurin and
+the launchers, **not Ghidra**. Download a Ghidra release from
+[the official releases](https://github.com/NationalSecurityAgency/ghidra/releases)
+and extract it to a permanent location. Set the user environment variable
+`GHIDRA_HOME` to the extracted directory **containing `ghidraRun.bat`** (for
+example, `C:\Tools\ghidra_11.4_PUBLIC`, not its parent directory). From
+PowerShell, substitute your actual extracted directory:
+
+```powershell
+[Environment]::SetEnvironmentVariable('GHIDRA_HOME', 'C:\Tools\ghidra_11.4_PUBLIC', 'User')
+$env:GHIDRA_HOME = 'C:\Tools\ghidra_11.4_PUBLIC'
+```
+
+Run the setup bundle, then start Ghidra Launch from the Start menu or desktop.
+Sign out and back in after setting the user variable so shortcuts started by
+Explorer inherit it (the second PowerShell command only affects that shell).
+Both launchers use `GHIDRA_HOME` when set; if it is unset or empty they instead
+look for `ghidraRun.bat` next to the launcher executable. The MSI installs only
+the launchers in Local AppData, so this fallback does not apply to a fresh MSI
+installation. If you move Ghidra, update `GHIDRA_HOME` accordingly.
+
 ## Build
 
 Use Visual Studio 2022 with the Desktop development with C++ workload, the
@@ -13,12 +36,11 @@ launcher.
 
 The installer projects additionally require WiX Toolset v3.11 or newer v3
 build tools. Run `download.sh` (Bash, curl, jq, unzip) or `download.ps1` to
-obtain the verified Ghidra and Temurin files. The scripts stage the Ghidra
-release in `GhidraLaunchInstaller/Ghidra` so the MSI installs `ghidraRun.bat`
-beside both launchers. Build the MSI and then the setup bundle after downloading.
-CI runs launcher checks and builds a fixture MSI to verify its layout without
-downloading third-party release binaries; release bundles still require the
-verified Temurin MSI.
+obtain the Ghidra release (to determine the required Java version) and Temurin
+files needed to build the setup bundle; downloading Ghidra does not install it
+for setup users. CI checks both launch paths and builds the launcher MSI to verify
+its layout without downloading third-party installers. Release
+bundles still require the verified Temurin MSI.
 
 ## Signing releases
 

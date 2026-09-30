@@ -17,8 +17,14 @@ public static class LauncherDialog {
 }
 '@
 
-function Invoke-Launcher($path, $workingDirectory, $expectedCode) {
-    $process = Start-Process -FilePath $path -WorkingDirectory $workingDirectory -PassThru
+function Invoke-Launcher($path, $workingDirectory, $expectedCode, $ghidraHome) {
+    $previousHome = $env:GHIDRA_HOME
+    $env:GHIDRA_HOME = $ghidraHome
+    try {
+        $process = Start-Process -FilePath $path -WorkingDirectory $workingDirectory -PassThru
+    } finally {
+        $env:GHIDRA_HOME = $previousHome
+    }
     try {
         $deadline = [DateTime]::UtcNow.AddSeconds(20)
         while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
@@ -64,7 +70,7 @@ try {
         foreach ($code in @(0, 37)) {
             Set-Content -LiteralPath $batch -Value '@echo off', 'echo %cd%>"%~dp0called.txt"', "exit /b $code" -Encoding Ascii
             Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue
-            Invoke-Launcher $launcher $scratch $code
+            Invoke-Launcher $launcher $scratch $code $null
             if (-not (Test-Path -LiteralPath $marker) -or (Get-Content -LiteralPath $marker -Raw).Trim() -ne $directory) {
                 throw "$launcher did not run the adjacent batch from its own directory"
             }
@@ -72,9 +78,21 @@ try {
 
         Remove-Item -LiteralPath $batch
         Remove-Item -LiteralPath $marker
-        Invoke-Launcher $launcher $scratch 1
+        Invoke-Launcher $launcher $scratch 1 $null
         if (Test-Path -LiteralPath $marker) { throw "$launcher ran a batch without an adjacent ghidraRun.bat" }
         if (Test-Path -LiteralPath (Join-Path $scratch 'decoy.txt')) { throw "$launcher ran the working-directory batch" }
+
+        $configured = Join-Path $scratch ("Configured " + [IO.Path]::GetFileNameWithoutExtension($binary))
+        New-Item -ItemType Directory -Path $configured | Out-Null
+        $configuredBatch = Join-Path $configured 'ghidraRun.bat'
+        $configuredMarker = Join-Path $configured 'called.txt'
+        Set-Content -LiteralPath $configuredBatch -Value '@echo off', 'echo %cd%>"%~dp0called.txt"', 'exit /b 0' -Encoding Ascii
+        Invoke-Launcher $launcher $scratch 0 $configured
+        if (-not (Test-Path -LiteralPath $configuredMarker) -or (Get-Content -LiteralPath $configuredMarker -Raw).Trim() -ne $configured) {
+            throw "$launcher did not run the configured batch from GHIDRA_HOME"
+        }
+        Remove-Item -LiteralPath $configuredBatch
+        Invoke-Launcher $launcher $scratch 1 $configured
         Write-Host "Launcher checks passed: $binary"
     }
 } finally {

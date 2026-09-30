@@ -30,15 +30,11 @@ jobs:
       - name: Exercise both launchers
         shell: pwsh
         run: ./tests/launchers.ps1 -Configuration ${{ matrix.configuration }}
-      - name: Build and inspect offline fixture MSI
+      - name: Build and inspect MSI layout
         if: matrix.configuration == 'Release'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $payload = 'GhidraLaunchInstaller/Ghidra'
-          New-Item -ItemType Directory -Path "$payload/support" -Force | Out-Null
-          Set-Content -Path "$payload/ghidraRun.bat" -Value '@exit /b 0' -Encoding Ascii
-          Set-Content -Path "$payload/support/fixture.txt" -Value 'offline fixture'
           $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
           if (-not $msbuild) { throw 'MSBuild not found' }
           & $msbuild GhidraLaunch.sln /t:GhidraLaunchInstaller /p:Configuration=Release /p:Platform=x64

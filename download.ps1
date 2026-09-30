@@ -40,7 +40,6 @@ function Download-Verified {
 if (Test-Path -LiteralPath $versionsFile) {
     Remove-Item -LiteralPath $versionsFile -Force
 }
-Remove-Item -LiteralPath (Join-Path $PSScriptRoot 'GhidraLaunchInstaller/Ghidra') -Recurse -Force -ErrorAction SilentlyContinue
 
 $status = 0
 $javaVersion = $null
@@ -101,19 +100,7 @@ if (Download-Verified 'Latest Ghidra' $asset.browser_download_url $ghidraChecksu
 }
 
 if ($status -eq 0) {
-    $staging = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
-    try {
-        Expand-Archive -LiteralPath $ghidraZip -DestinationPath $staging
-        $root = Get-ChildItem -LiteralPath $staging -Directory | Where-Object {
-            Test-Path -LiteralPath (Join-Path $_.FullName 'ghidraRun.bat') -PathType Leaf
-        } | Select-Object -First 1
-        if (-not $root) { throw 'Ghidra archive does not contain a usable ghidraRun.bat' }
-        $destination = Join-Path $PSScriptRoot 'GhidraLaunchInstaller/Ghidra'
-        Move-Item -LiteralPath $root.FullName -Destination $destination
-        [System.IO.File]::WriteAllText($versionsFile, ('<?define JavaVersion = "{0}" ?>' -f $javaVersion) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
-    } finally {
-        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
-    }
+    [System.IO.File]::WriteAllText($versionsFile, ('<?define JavaVersion = "{0}" ?>' -f $javaVersion) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 }
 
 exit $status
