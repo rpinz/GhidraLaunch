@@ -18,6 +18,7 @@ public static class LauncherDialog {
 '@
 
 function Invoke-Launcher($path, $workingDirectory, $expectedCode, $ghidraHome) {
+    Write-Host "Launching $path (expected exit: $expectedCode; GHIDRA_HOME: $ghidraHome)"
     $previousHome = $env:GHIDRA_HOME
     $env:GHIDRA_HOME = $ghidraHome
     try {
@@ -39,7 +40,10 @@ function Invoke-Launcher($path, $workingDirectory, $expectedCode, $ghidraHome) {
             Start-Sleep -Milliseconds 100
             $process.Refresh()
         }
-        if (-not $process.HasExited) { throw "Launcher timed out: $path" }
+        if (-not $process.HasExited) {
+            $marker = Join-Path (Split-Path $path -Parent) 'called.txt'
+            throw "Launcher timed out: $path (batch marker exists: $(Test-Path -LiteralPath $marker); dialog window: $window; owner: $owner)"
+        }
         if ($process.ExitCode -ne $expectedCode) {
             throw "$path exited $($process.ExitCode), expected $expectedCode"
         }
