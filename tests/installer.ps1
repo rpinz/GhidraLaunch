@@ -35,13 +35,14 @@ foreach ($name in $expected) {
     }
 }
 
-$directory = @(Read-Rows 'SELECT `Directory_Parent`, `DefaultDir` FROM `Directory` WHERE `Directory` = ''INSTALLFOLDER''' 2)
-if ($directory.Count -ne 1) {
-    throw "MSI does not contain exactly one INSTALLFOLDER directory row (found $($directory.Count))"
+$directoryRows = @(Read-Rows 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' 3 |
+    Where-Object { $_.Column1 -eq 'INSTALLFOLDER' })
+if ($directoryRows.Count -ne 1) {
+    throw "MSI does not contain exactly one INSTALLFOLDER directory row (found $($directoryRows.Count))"
 }
-$installDirectory = $directory[0]
-if ($installDirectory.Column1 -ne 'LocalAppDataFolder' -or
-    ($installDirectory.Column2 -split '\|')[-1] -ne 'Ghidra Launch') {
+$installDirectory = $directoryRows[0]
+if ($installDirectory.Column2 -ne 'LocalAppDataFolder' -or
+    ($installDirectory.Column3 -split '\|')[-1] -ne 'Ghidra Launch') {
     throw 'MSI installation directory differs from the advertised per-user layout'
 }
 
