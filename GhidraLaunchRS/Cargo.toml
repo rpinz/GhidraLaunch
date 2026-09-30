@@ -13,10 +13,10 @@ panic = "abort"
 [dependencies]
 
 [build-dependencies]
-embed-resource = "1.7.3"
+embed-resource = "3.0.11"
 
 [dependencies.windows-sys]
-version = "0.36.1"
+version = "0.61.2"
 features = [
     "Win32_Foundation",
     "Win32_System_SystemInformation",

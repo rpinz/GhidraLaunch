@@ -37,7 +37,7 @@ fn show_error(message: &str, code: impl Display) {
 
     unsafe {
         _ = MessageBoxW(
-            0,
+            std::ptr::null_mut(),
             text.as_ptr(),
             caption.as_ptr(),
             MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND,
