@@ -11,7 +11,7 @@
 <!-- The version number of this setup package -->
 <?define Version = "0.0.0.1" ?>
 <!-- The copyright -->
-<?define Copyright = "🄯 CC0 2022 No rights reserved." ?>
+<?define Copyright = "The Unlicense" ?>
 <!-- The help url -->
 <?define HelpUrl = "https://htmlpreview.github.io/?https://github.com/NationalSecurityAgency/ghidra/blob/stable/GhidraDocs/InstallationGuide.html" ?>
 <!-- The about url -->
@@ -58,7 +58,7 @@
   <!-- 
     <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkLicense">
       <bal:WixStandardBootstrapperApplication
-        LicenseUrl=""
+        LicenseUrl="https://unlicense.org/"
         LogoFile="$(var.Logo)"
         ShowVersion="yes"
         SuppressOptionsUI="yes"
@@ -67,7 +67,7 @@
   -->
   <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkSidebarLicense">
       <bal:WixStandardBootstrapperApplication
-        LicenseUrl=""
+        LicenseUrl="https://unlicense.org/"
         LogoFile="$(var.Logo)"
         LogoSideFile="$(var.LogoSide)"
         ShowVersion="no"
