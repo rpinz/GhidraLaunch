@@ -90,7 +90,7 @@ fi
 if [[ "${status}" -eq 0 ]]; then
   # Stage the verified Ghidra release for WiX to install beside the launchers.
   staging="$(mktemp -d)"
-  root="$(unzip -Z1 Ghidra.zip | awk '/^[^/]+\/ghidraRun\.bat$/ { sub(/\/ghidraRun\.bat$/, ""); print; exit }')"
+  root="$(unzip -Z1 Ghidra.zip | awk '/^[^/]+\/ghidraRun\.bat$/ { sub(/\/ghidraRun\.bat$/, ""); print; exit }')" || root=""
   if [[ -z "${root}" ]] || ! unzip -q Ghidra.zip -d "${staging}" || [[ ! -f "${staging}/${root}/ghidraRun.bat" ]]; then
     echo "Ghidra archive does not contain a usable ghidraRun.bat"
     status=1

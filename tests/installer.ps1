@@ -34,8 +34,9 @@ foreach ($name in $expected) {
     }
 }
 
-$directory = @(Read-Rows "SELECT `Directory_Parent`, `DefaultDir` FROM `Directory` WHERE `Directory` = 'INSTALLFOLDER'" 2)
-if ($directory.Count -ne 1 -or $directory[0][0] -ne 'LocalAppDataFolder' -or $directory[0][1] -ne 'Ghidra Launch') {
+$directory = @(Read-Rows 'SELECT `Directory_Parent`, `DefaultDir` FROM `Directory` WHERE `Directory` = ''INSTALLFOLDER''' 2)
+if ($directory.Count -ne 1 -or $directory[0][0] -ne 'LocalAppDataFolder' -or
+    ($directory[0][1] -split '\|')[-1] -ne 'Ghidra Launch') {
     throw 'MSI installation directory differs from the advertised per-user layout'
 }
 

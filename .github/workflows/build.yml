@@ -41,7 +41,6 @@ jobs:
           Set-Content -Path "$payload/support/fixture.txt" -Value 'offline fixture'
           $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
           if (-not $msbuild) { throw 'MSBuild not found' }
-          $solutionDir = (Get-Location).Path + '\'
-          & $msbuild GhidraLaunchInstaller/GhidraLaunchInstaller.wixproj /t:Build /p:Configuration=Release /p:Platform=x86 /p:SolutionDir=$solutionDir
+          & $msbuild GhidraLaunch.sln /t:GhidraLaunchInstaller /p:Configuration=Release /p:Platform=x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./tests/installer.ps1 -MsiPath GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi
