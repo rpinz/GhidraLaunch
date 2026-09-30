@@ -13,8 +13,9 @@ use std::path::PathBuf;
 use std::process::{exit, Command};
 use windows_sys::{
     Win32::System::SystemInformation::GetSystemDirectoryW,
-    Win32::System::Threading::CREATE_NO_WINDOW,
-    Win32::UI::WindowsAndMessaging::MessageBoxW, Win32::UI::WindowsAndMessaging::MB_DEFAULT_DESKTOP_ONLY, Win32::UI::WindowsAndMessaging::MB_ICONERROR, Win32::UI::WindowsAndMessaging::MB_SETFOREGROUND, Win32::UI::WindowsAndMessaging::MB_SYSTEMMODAL,
+    Win32::System::Threading::CREATE_NO_WINDOW, Win32::UI::WindowsAndMessaging::MessageBoxW,
+    Win32::UI::WindowsAndMessaging::MB_ICONERROR, Win32::UI::WindowsAndMessaging::MB_SETFOREGROUND,
+    Win32::UI::WindowsAndMessaging::MB_SYSTEMMODAL,
 };
 
 // constant values
@@ -40,7 +41,7 @@ fn show_error(message: &str, code: impl Display) {
             std::ptr::null_mut(),
             text.as_ptr(),
             caption.as_ptr(),
-            MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND,
+            MB_ICONERROR | MB_SYSTEMMODAL | MB_SETFOREGROUND,
         );
     }
 }
@@ -99,9 +100,9 @@ fn launch() -> i32 {
     };
 
     // cmd.exe cannot use a UNC working directory; local paths stay out of its command text
-    let mut arguments = OsString::from("/d /c \"\"");
     let unc = directory.to_string_lossy().starts_with(r"\\");
     let percent = directory.as_os_str().encode_wide().any(|unit| unit == b'%' as u16);
+    let mut arguments = OsString::from("/d /c ");
     if unc && percent {
         arguments = OsString::from("/d /v:on /c \"\"");
         // delayed expansion inserts these characters after cmd's percent-expansion pass
@@ -113,13 +114,15 @@ fn launch() -> i32 {
                 _ => arguments.push(OsString::from_wide(&[unit])),
             }
         }
+        arguments.push("\"\"");
     } else if unc {
+        arguments = OsString::from("/d /c \"\"");
         arguments.push(directory.join(BATCH_FILE));
+        arguments.push("\"\"");
     } else {
         arguments.push(r".\");
         arguments.push(BATCH_FILE);
     }
-    arguments.push("\"\"");
 
     // create process and wait for child to infinity and beyond
     let mut command = Command::new(cmd);

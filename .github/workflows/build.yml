@@ -20,9 +20,23 @@ jobs:
         run: |
           $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
           if (-not $msbuild) { throw 'MSBuild not found' }
-          & $msbuild GhidraLaunchC/GhidraLaunchC.vcxproj /t:Build /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /m
+          $solutionDir = (Get-Location).Path + '\'
+          & $msbuild GhidraLaunchC/GhidraLaunchC.vcxproj /t:Build /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /p:SolutionDir=$solutionDir /m
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $msbuild GhidraLaunchRS/GhidraLaunchRS.vcxproj /t:Build /p:Configuration=${{ matrix.configuration }} /p:Platform=x64
+          & $msbuild GhidraLaunchRS/GhidraLaunchRS.vcxproj /t:Build /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /p:SolutionDir=$solutionDir
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $msbuild GhidraLaunchRS/GhidraLaunchRS.vcxproj /t:Rebuild /p:Configuration=${{ matrix.configuration }} /p:Platform=x64
+          & $msbuild GhidraLaunchRS/GhidraLaunchRS.vcxproj /t:Rebuild /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /p:SolutionDir=$solutionDir
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise both launchers
+        shell: pwsh
+        run: ./tests/launchers.ps1 -Configuration ${{ matrix.configuration }}
+      - name: Build and inspect MSI layout
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild not found' }
+          & $msbuild GhidraLaunch.sln /t:GhidraLaunchInstaller /p:Configuration=Release /p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./tests/installer.ps1 -MsiPath GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi
