@@ -92,9 +92,13 @@ fn launch() -> i32 {
         Err(error) => return fail("Unable to locate cmd.exe, error", error),
     };
 
-    // absolute batch path so UNC directories work, /d skips cmd.exe AutoRun commands
+    // cmd.exe cannot use a UNC working directory; local paths stay out of its command text
     let mut arguments = OsString::from("/d /c \"\"");
-    arguments.push(directory.join(BATCH_FILE));
+    if directory.to_string_lossy().starts_with(r"\\") {
+        arguments.push(directory.join(BATCH_FILE));
+    } else {
+        arguments.push(r".\ghidraRun.bat");
+    }
     arguments.push("\"\"");
 
     // create process and wait for child to infinity and beyond
