@@ -64,11 +64,20 @@ ghidra_checksum="$(jq -r --argjson asset "${ghidra_asset}" '
     (.body // "") as $body
     | ($body | hashes) as $all
     | ($asset.name // "" | gsub("[.]"; "[.]")) as $name
-    | ([$body | split("\n")[] | select(test("(^|[^A-Za-z0-9_.-])" + $name + "($|[^A-Za-z0-9_.-])")) | hashes[]]) as $named
+    | ($body | split("\n")) as $lines
+    | "[A-Za-z0-9_-]+[.](zip|msi|exe|tar|gz|7z)([^A-Za-z0-9_.-]|$)" as $filePattern
+    | ([range(0; $lines | length) as $i
+        | $lines[$i]
+        | select(test("(^|[^A-Za-z0-9_.-])" + $name + "($|[^A-Za-z0-9_.-])"))
+        | select(([match($filePattern; "ig")] | length) == 1)
+        | if (hashes | length) > 0 then hashes[]
+          elif ($i + 1 < ($lines | length)) and ($lines[$i + 1] | test($filePattern; "i") | not)
+          then ($lines[$i + 1] | hashes[])
+          else empty end]) as $named
     | if ($named | length) == 1 then $named[0]
       elif ($named | length) == 0 and ($all | length) == 1
-        and ([$body | split("\n")[] | select(hashes | length > 0)
-              | select(test("[A-Za-z0-9_-]+[.](zip|msi|exe|tar|gz|7z)([^A-Za-z0-9_.-]|$)"; "i") | not)] | length) == 1
+        and ([$lines[] | select(hashes | length > 0)
+              | select(test($filePattern; "i") | not)] | length) == 1
       then $all[0]
       else empty end
   end

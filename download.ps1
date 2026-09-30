@@ -61,10 +61,18 @@ if ($asset.digest) {
     $pattern = 'SHA-256:[^0-9a-f]*([0-9a-f]{64})(?![0-9a-f])'
     $allHashes = @([regex]::Matches([string]$ghidra.body, $pattern, 'IgnoreCase'))
     $namePattern = '(^|[^A-Za-z0-9_.-])' + [regex]::Escape($asset.name) + '($|[^A-Za-z0-9_.-])'
+    $filePattern = '[A-Za-z0-9_-]+\.(zip|msi|exe|tar|gz|7z)([^A-Za-z0-9_.-]|$)'
+    $lines = @([string]$ghidra.body -split '\r?\n')
     $namedHashes = @(
-        foreach ($line in ([string]$ghidra.body -split '\r?\n')) {
-            if ($line -match $namePattern) {
-                foreach ($hash in [regex]::Matches($line, $pattern, 'IgnoreCase')) {
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match $namePattern -and
+                [regex]::Matches($lines[$i], $filePattern, 'IgnoreCase').Count -eq 1) {
+                $hashLine = $lines[$i]
+                if ($hashLine -notmatch $pattern -and $i + 1 -lt $lines.Count -and
+                    $lines[$i + 1] -notmatch $filePattern) {
+                    $hashLine = $lines[$i + 1]
+                }
+                foreach ($hash in [regex]::Matches($hashLine, $pattern, 'IgnoreCase')) {
                     $hash
                 }
             }
@@ -73,8 +81,8 @@ if ($asset.digest) {
     if ($namedHashes.Count -eq 1) {
         $ghidraChecksum = $namedHashes[0].Groups[1].Value
     } elseif ($namedHashes.Count -eq 0 -and $allHashes.Count -eq 1 -and
-              @([string]$ghidra.body -split '\r?\n' | Where-Object {
-                  $_ -match $pattern -and $_ -notmatch '[A-Za-z0-9_-]+\.(zip|msi|exe|tar|gz|7z)([^A-Za-z0-9_.-]|$)'
+              @($lines | Where-Object {
+                  $_ -match $pattern -and $_ -notmatch $filePattern
               }).Count -eq 1) {
         $ghidraChecksum = $allHashes[0].Groups[1].Value
     }
