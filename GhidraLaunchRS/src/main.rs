@@ -92,9 +92,14 @@ fn launch() -> i32 {
         Err(error) => return fail("Unable to locate cmd.exe, error", error),
     };
 
-    // create process and wait for child to infinity and beyond, /d skips cmd.exe AutoRun commands
+    // absolute batch path so UNC directories work, /d skips cmd.exe AutoRun commands
+    let mut arguments = OsString::from("/d /c \"\"");
+    arguments.push(directory.join(BATCH_FILE));
+    arguments.push("\"\"");
+
+    // create process and wait for child to infinity and beyond
     let status = Command::new(cmd)
-        .raw_arg(format!("/d /c .\\{BATCH_FILE}"))
+        .raw_arg(arguments)
         .current_dir(directory)
         .creation_flags(CREATE_NO_WINDOW)
         .status();

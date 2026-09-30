@@ -88,8 +88,8 @@ int APIENTRY wWinMain(
     return EXIT_FAILURE;
   }
 
-  // prepare commandline, /d skips cmd.exe AutoRun commands
-  if (swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c .\\%ls", wApplicationName, BATCH_FILE) < 0) {
+  // prepare commandline with an absolute batch path so UNC directories work, /d skips cmd.exe AutoRun commands
+  if (swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c \"\"%ls\\%ls\"\"", wApplicationName, wDirectory, BATCH_FILE) < 0) {
     ShowError(L"Unable to prepare the command line, error", ERROR_FILENAME_EXCED_RANGE);
     return EXIT_FAILURE;
   }

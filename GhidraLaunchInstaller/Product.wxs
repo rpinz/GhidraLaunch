@@ -30,7 +30,7 @@
     <!-- Embed cabinet file in MSI -->
     <MediaTemplate EmbedCab="yes" />
     <!-- Allow upgrades and prevent downgrades -->
-    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <!-- Disallow user from installing for all users -->
     <Property Id="ALLUSERS" Secure="yes" />
     <Condition Message="Setting the ALLUSERS property is not allowed because [ProductName] is a per-user application. Setup will now exit.">
