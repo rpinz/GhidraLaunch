@@ -42,14 +42,14 @@
     <NMakeBuildCommandLine>cargo build &amp;&amp; copy target\debug\ghidra_launch.exe GhidraLaunchRS.exe</NMakeBuildCommandLine>
     <NMakeOutput>GhidraLaunchRS.exe</NMakeOutput>
     <NMakeCleanCommandLine>cargo clean &amp;&amp; del GhidraLaunchRS.exe  || exit 0</NMakeCleanCommandLine>
-    <NMakeReBuildCommandLine>cargo rebuild &amp;&amp; copy target\debug\ghidra_launch.exe GhidraLaunchRS.exe</NMakeReBuildCommandLine>
+    <NMakeReBuildCommandLine>cargo clean &amp;&amp; cargo build &amp;&amp; copy target\debug\ghidra_launch.exe GhidraLaunchRS.exe</NMakeReBuildCommandLine>
     <NMakePreprocessorDefinitions>_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <NMakeBuildCommandLine>cargo build --release &amp;&amp; copy target\release\ghidra_launch.exe GhidraLaunchRS.exe</NMakeBuildCommandLine>
     <NMakeOutput>GhidraLaunchRS.exe</NMakeOutput>
     <NMakeCleanCommandLine>cargo clean --release &amp;&amp; del GhidraLaunchRS.exe || exit 0</NMakeCleanCommandLine>
-    <NMakeReBuildCommandLine>cargo rebuild --release &amp;&amp; copy target\release\ghidra_launch.exe GhidraLaunchRS.exe</NMakeReBuildCommandLine>
+    <NMakeReBuildCommandLine>cargo clean --release &amp;&amp; cargo build --release &amp;&amp; copy target\release\ghidra_launch.exe GhidraLaunchRS.exe</NMakeReBuildCommandLine>
     <NMakePreprocessorDefinitions>NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
   </PropertyGroup>
   <ItemDefinitionGroup>

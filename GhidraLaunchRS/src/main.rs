@@ -2,116 +2,125 @@
 //
 #![windows_subsystem = "windows"]
 
-use core::ffi::c_void;
-use std::mem::size_of;
-use std::ptr::{null, null_mut};
+use std::env;
+use std::ffi::OsString;
+use std::fmt::Display;
+use std::io;
+use std::iter::once;
+use std::os::windows::ffi::OsStringExt;
+use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
+use std::process::{exit, Command};
 use windows_sys::{
-    self,
-    Win32::Foundation::CloseHandle, Win32::Foundation::GetLastError, Win32::Foundation::HANDLE, Win32::Foundation::INVALID_HANDLE_VALUE,
-    Win32::Security::SECURITY_ATTRIBUTES,
-    Win32::System::Diagnostics::Debug::MessageBeep,
-    Win32::System::Threading::CreateProcessA, Win32::System::Threading::GetExitCodeProcess, Win32::System::Threading::TerminateProcess, Win32::System::Threading::WaitForSingleObject, Win32::System::Threading::CREATE_NO_WINDOW, Win32::System::Threading::PROCESS_INFORMATION, Win32::System::Threading::STARTF_USESHOWWINDOW, Win32::System::Threading::STARTUPINFOA, Win32::System::Threading::WAIT_OBJECT_0,
-    Win32::UI::WindowsAndMessaging::MessageBoxA, Win32::UI::WindowsAndMessaging::MB_DEFAULT_DESKTOP_ONLY, Win32::UI::WindowsAndMessaging::MB_ICONERROR, Win32::UI::WindowsAndMessaging::MB_SETFOREGROUND, Win32::UI::WindowsAndMessaging::MB_SYSTEMMODAL, Win32::UI::WindowsAndMessaging::SW_HIDE, 
+    Win32::System::SystemInformation::GetSystemDirectoryW,
+    Win32::System::Threading::CREATE_NO_WINDOW,
+    Win32::UI::WindowsAndMessaging::MessageBoxW, Win32::UI::WindowsAndMessaging::MB_DEFAULT_DESKTOP_ONLY, Win32::UI::WindowsAndMessaging::MB_ICONERROR, Win32::UI::WindowsAndMessaging::MB_SETFOREGROUND, Win32::UI::WindowsAndMessaging::MB_SYSTEMMODAL,
 };
 
 // constant values
-const INFINITE: u32 = 0xFFFFFFFF;
-const EXIT_SUCCESS: u32 = 0;
-const EXIT_FAILURE: u32 = 1;
-const FALSE: i32 = 0;
-const TRUE: i32 = 1;
+const APPLICATION_NAME: &str = "GhidraLaunch";
+const BATCH_FILE: &str = "ghidraRun.bat";
+const EXIT_SUCCESS: i32 = 0;
+const EXIT_FAILURE: i32 = 1;
+const ERROR_FILE_NOT_FOUND: i32 = 2;
+const ERROR_BAD_PATHNAME: i32 = 161;
+
+// NUL-terminated UTF-16 copy of a string
+fn to_wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(once(0)).collect()
+}
+
+// display message box with error message
+fn show_error(message: &str, code: impl Display) {
+    let text = to_wide(&format!("Failed to launch Ghidra!\n{message} {code}"));
+    let caption = to_wide(APPLICATION_NAME);
+
+    unsafe {
+        _ = MessageBoxW(
+            0,
+            text.as_ptr(),
+            caption.as_ptr(),
+            MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND,
+        );
+    }
+}
+
+// display message box for an io::Error and return a failure exit code
+fn fail(message: &str, error: io::Error) -> i32 {
+    show_error(message, error.raw_os_error().unwrap_or(EXIT_FAILURE) as u32);
+    EXIT_FAILURE
+}
+
+// absolute path to the Windows system directory
+fn system_directory() -> io::Result<PathBuf> {
+    let mut buffer: Vec<u16> = vec![0; 260];
+
+    loop {
+        let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+        if length == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if length < buffer.len() {
+            buffer.truncate(length);
+            return Ok(PathBuf::from(OsString::from_wide(&buffer)));
+        }
+        // buffer too small, length includes the terminating NUL
+        buffer.resize(length, 0);
+    }
+}
+
+// launch ghidraRun.bat and return the exit code
+fn launch() -> i32 {
+    // directory containing this launcher, ghidraRun.bat lives next to it
+    let executable = match env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => return fail("Unable to locate the launcher, error", error),
+    };
+    let directory = match executable.parent() {
+        Some(directory) => directory,
+        None => return fail("Unable to locate the launcher, error", io::Error::from_raw_os_error(ERROR_BAD_PATHNAME)),
+    };
+
+    // make sure ghidraRun.bat exists before starting anything
+    if !directory.join(BATCH_FILE).is_file() {
+        return fail("ghidraRun.bat not found next to the launcher, error", io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND));
+    }
+
+    // absolute path to cmd.exe, never resolved through the search path
+    let cmd = match system_directory() {
+        Ok(system) => system.join("cmd.exe"),
+        Err(error) => return fail("Unable to locate cmd.exe, error", error),
+    };
+
+    // absolute batch path so UNC directories work, /d skips cmd.exe AutoRun commands
+    let mut arguments = OsString::from("/d /c \"\"");
+    arguments.push(directory.join(BATCH_FILE));
+    arguments.push("\"\"");
+
+    // create process and wait for child to infinity and beyond
+    let status = Command::new(cmd)
+        .raw_arg(arguments)
+        .current_dir(directory)
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+
+    match status {
+        Ok(status) => match status.code() {
+            Some(EXIT_SUCCESS) => EXIT_SUCCESS,
+            Some(code) => {
+                show_error("ghidraRun.bat exited with code", code as u32);
+                code
+            }
+            None => {
+                show_error("ghidraRun.bat exited with code", EXIT_FAILURE);
+                EXIT_FAILURE
+            }
+        },
+        Err(error) => fail("Unable to start cmd.exe, error", error),
+    }
+}
 
 // main entrypoint
 fn main() {
-    const APPLICATION_NAME: &[u8; 13] = b"GhidraLaunch\0";
-    const COMMANDLINE: &[u8; 27] = b"cmd.exe /c .\\ghidraRun.bat\0";
-    let mut return_code: u32 = EXIT_FAILURE;
-
-    // empty STARTUPINFO struct
-    let mut lp_startup_info: STARTUPINFOA = STARTUPINFOA {
-        cb: 0,
-        lpReserved: null_mut(),
-        lpDesktop: null_mut(),
-        lpTitle: null_mut(),
-        dwX: 0,
-        dwY: 0,
-        dwXSize: 0,
-        dwYSize: 0,
-        dwXCountChars: 0,
-        dwYCountChars: 0,
-        dwFillAttribute: 0,
-        dwFlags: 0,
-        wShowWindow: 0,
-        cbReserved2: 0,
-        lpReserved2: null_mut(),
-        hStdInput: INVALID_HANDLE_VALUE as isize,
-        hStdOutput: INVALID_HANDLE_VALUE as isize,
-        hStdError: INVALID_HANDLE_VALUE as isize,
-    };
-    // empty PROCESS_INFORMATION struct
-    let mut lp_process_info: PROCESS_INFORMATION = PROCESS_INFORMATION {
-        hProcess: 0,
-        hThread: 0,
-        dwProcessId: 0,
-        dwThreadId: 0,
-    };
-
-    // populate STARTUPINFO struct making sure there is no console window
-    lp_startup_info.cb = size_of::<STARTUPINFOA>() as u32;
-    lp_startup_info.dwFlags = STARTF_USESHOWWINDOW as u32;
-    lp_startup_info.wShowWindow = SW_HIDE as u16;
-
-    unsafe {
-        // create process
-        if CreateProcessA(
-            null() as *const u8,
-            COMMANDLINE.to_owned().as_mut_ptr() as *mut u8,
-            null() as *const SECURITY_ATTRIBUTES,
-            null() as *const SECURITY_ATTRIBUTES,
-            FALSE as i32,
-            CREATE_NO_WINDOW as u32,
-            null() as *const c_void,
-            null() as *const u8,
-            &mut lp_startup_info as *const STARTUPINFOA,
-            &mut lp_process_info as *mut PROCESS_INFORMATION,
-        ) == TRUE {
-            //  wait for child to infinity and beyond
-            let mut dw_error: u32 = WaitForSingleObject(lp_process_info.hProcess as HANDLE, INFINITE as u32);
-            // if error terminate child process
-            if dw_error != WAIT_OBJECT_0 {
-                // terminate child process
-                if TerminateProcess(lp_process_info.hProcess as HANDLE, dw_error) == TRUE {
-                    // store error code
-                    return_code = dw_error;
-                }
-            } else {
-                // get child exit code
-                if GetExitCodeProcess(lp_process_info.hProcess as HANDLE, &mut dw_error) == TRUE {
-                    // store child exit code
-                    return_code = dw_error;
-                }
-            }
-        }
-
-        // if process spawn failed, return_code is non-zero
-        if return_code != EXIT_SUCCESS {
-            // display message box with error message (error number)
-            return_code = GetLastError();
-            _ = MessageBoxA(
-                0 as isize,
-                format!("Failed to launch Ghidra!\nFatal Error: {}", return_code)
-                    .as_ptr() as *const u8,
-                APPLICATION_NAME.as_ptr() as *const u8,
-                MB_ICONERROR | MB_DEFAULT_DESKTOP_ONLY | MB_SYSTEMMODAL | MB_SETFOREGROUND as u32,
-            );
-        }
-
-        // close PROCESS_INFORMATION handles
-        if CloseHandle(lp_process_info.hThread) == FALSE {
-            _ = MessageBeep(MB_ICONERROR);
-        }
-        if CloseHandle(lp_process_info.hProcess) == FALSE {
-            _ = MessageBeep(MB_ICONERROR);
-        }
-    }
+    exit(launch());
 }
