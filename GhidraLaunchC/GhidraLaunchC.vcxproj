@@ -66,7 +66,7 @@
       <CompileAs>CompileAsC</CompileAs>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <ExceptionHandling>false</ExceptionHandling>
-      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>NotSet</SubSystem>
@@ -101,7 +101,7 @@
       <EnforceTypeConversionRules>false</EnforceTypeConversionRules>
       <EnableModules>false</EnableModules>
       <CompileAs>CompileAsC</CompileAs>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>NotSet</SubSystem>

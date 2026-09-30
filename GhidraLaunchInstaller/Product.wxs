@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- START OF DEFINITIONS -->
 <!-- The name of the application -->
-<?define Name = "Ghidra" ?>
+<?define Name = "Ghidra Launch" ?>
 <!-- The Description of the application -->
 <?define Description = "Launch Ghidra software reverse engineering (SRE) framework by this pretty icon." ?>
 <!-- The manufacturer, for setup of package publisher and folder info -->
-<?define Manufacturer = "Ghidra" ?>
+<?define Manufacturer = "rpinz" ?>
 <!-- The version number of this setup package -->
 <?define Version = "0.0.0.1" ?>
 <!-- GUIDs -->
@@ -50,11 +50,11 @@
   <!-- details of installation directory -->
   <Fragment>
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <!-- AppData -->
-      <Directory Id="AppDataFolder">
-        <!-- create application folder inside App Data folder -->
+      <Directory Id="DesktopFolder" Name="DesktopFolder" />
+      <!-- Local AppData -->
+      <Directory Id="LocalAppDataFolder">
+        <!-- create application folder inside local AppData folder -->
         <Directory Id="INSTALLFOLDER" Name="$(var.Name)">
-          <Directory Id="DesktopFolder" Name="DesktopFolder" />
         </Directory>
       </Directory>
       <!-- create application folder inside Program Menu-->
@@ -82,7 +82,7 @@
     <ComponentGroup Id="DesktopShortcutComponents">
       <!-- Shortcut -->
       <Component Id="DesktopShortcutComponent" Guid="$(var.DesktopGuid)" Directory="DesktopFolder">
-        <Shortcut Id="LauncherComponentShortcut" Name="$(var.Name)" Description="$(var.Description)" Icon="Logo.ico" Directory="DesktopFolder" Target="[#RSLauncherComponent]" WorkingDirectory="INSTALLFOLDER" />
+        <Shortcut Id="LauncherComponentShortcut" Name="$(var.Name)" Description="$(var.Description)" Icon="Logo.ico" Directory="DesktopFolder" Target="[#CLauncherComponent]" WorkingDirectory="INSTALLFOLDER" />
         <!-- Remove desktop shortcut on uninstall -->
         <RemoveFolder Id="CleanupDesktopShortcut" Directory="DesktopFolder" On="uninstall" />
         <RegistryValue Id="DesktopShortcutRegistry" Name="DesktopShortcut" Root="HKCU" Key="Software\$(var.Manufacturer)\$(var.Name)" Type="integer" Value="1" KeyPath="yes" />
