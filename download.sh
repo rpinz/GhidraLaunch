@@ -65,11 +65,11 @@ ghidra_checksum="$(jq -r --argjson asset "${ghidra_asset}" '
     | ($body | hashes) as $all
     | ($asset.name // "" | gsub("[.]"; "[.]")) as $name
     | ($body | split("\n")) as $lines
-    | "[A-Za-z0-9_-]+[.](zip|msi|exe|tar|gz|7z)([^A-Za-z0-9_.-]|$)" as $filePattern
+    | "([A-Za-z0-9_.-]+[.](zip|msi|exe|tar|gz|7z))(?=[^A-Za-z0-9_.-]|$)" as $filePattern
     | ([range(0; $lines | length) as $i
         | $lines[$i]
         | select(test("(^|[^A-Za-z0-9_.-])" + $name + "($|[^A-Za-z0-9_.-])"))
-        | select(([match($filePattern; "ig")] | length) == 1)
+        | select(([match($filePattern; "ig") | .captures[0].string] | unique) == [$asset.name])
         | if (hashes | length) > 0 then hashes[]
           elif ($i + 1 < ($lines | length)) and ($lines[$i + 1] | test($filePattern; "i") | not)
           then ($lines[$i + 1] | hashes[])
