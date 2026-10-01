@@ -54,6 +54,7 @@ END
 // remains consistent on all systems.
 IDI_ICON1               ICON                    "..\\Resources\\Ghidra.ico"
 
+#include "Version.h"
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -61,8 +62,8 @@ IDI_ICON1               ICON                    "..\\Resources\\Ghidra.ico"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,0,0,1
- PRODUCTVERSION 0,0,0,1
+ FILEVERSION GHIDRA_LAUNCH_FILEVERSION
+ PRODUCTVERSION GHIDRA_LAUNCH_FILEVERSION
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -79,12 +80,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "GhidraLaunch"
             VALUE "FileDescription", "Launch Ghidra ghidraRun.bat without console window"
-            VALUE "FileVersion", "0.0.0.1"
+            VALUE "FileVersion", GHIDRA_LAUNCH_VERSION
             VALUE "InternalName", "GhidraLaunch.exe"
             VALUE "LegalCopyright", "The Unlicense"
             VALUE "OriginalFilename", "GhidraLaunch.exe"
             VALUE "ProductName", "GhidraLaunch"
-            VALUE "ProductVersion", "0.0.0.1"
+            VALUE "ProductVersion", GHIDRA_LAUNCH_VERSION
         END
     END
     BLOCK "VarFileInfo"
@@ -107,4 +108,3 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED
-

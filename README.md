@@ -66,7 +66,8 @@ keys out of the repository and CI; do not publish unsigned release artifacts.
 
 ## Releasing
 
-Pushing a tag matching `v*.*.*` (or running the *Build and draft setup bundle
+Pushing a tag matching `vMAJOR.MINOR.PATCH` or
+`vMAJOR.MINOR.PATCH.REVISION` (optionally with a suffix), or running the *Build and draft setup bundle
 release* workflow manually with a `tag` input) builds the launchers, the MSI,
 and the setup bundle on a Windows runner, re-downloading and verifying Ghidra
 and Temurin the same way `download.ps1` does locally, then runs the same

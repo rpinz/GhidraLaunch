@@ -10,7 +10,7 @@
 <?define Manufacturer = "rpinz" ?>
 <!-- The version number of this setup package -->
 <?ifndef ReleaseVersion ?>
-<?define ReleaseVersion = "0.0.0.1" ?>
+<?define ReleaseVersion = "0.0.0" ?>
 <?endif ?>
 <!-- The copyright -->
 <?define Copyright = "The Unlicense" ?>

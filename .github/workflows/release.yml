@@ -31,12 +31,21 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = if ($env:EVENT_NAME -eq 'workflow_dispatch') { $env:INPUT_TAG } else { $env:REF_NAME }
-          if ($tag -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'Release tag must match vMAJOR.MINOR.PATCH[-suffix]' }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?$') { throw 'Release tag must match vMAJOR.MINOR.PATCH[.REVISION][-suffix]' }
           $version = $tag.Substring(1) -replace '-.*$', ''
-          if (($version -split '\.') | Where-Object { [int]$_ -gt 255 }) { throw 'Release version components must be <= 255 for MSI compatibility' }
+          $components = $version -split '\.'
+          if ($components | Where-Object { [int]$_ -gt 255 }) { throw 'Release version components must be <= 255 for Windows compatibility' }
+          $fileVersion = if ($components.Count -eq 3) { "$version.0" } else { $version }
+          $msiVersion = ($components | Select-Object -First 3) -join '.'
           Write-Host "Releasing $tag"
           "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RELEASE_VERSION=$msiVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          @"
+          #ifndef GHIDRA_LAUNCH_VERSION
+          #define GHIDRA_LAUNCH_VERSION "$fileVersion"
+          #define GHIDRA_LAUNCH_FILEVERSION $($fileVersion -replace '\.', ',')
+          #endif
+          "@ | Set-Content -Path Resources/Version.h -Encoding ascii
 
       # Downloads and checksum-verifies Ghidra.zip and the Temurin JDK MSI into the
       # repo root, and records their download URLs + the required Java version in
