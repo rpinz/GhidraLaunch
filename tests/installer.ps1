@@ -82,6 +82,19 @@ if ($ghidraPackage.GetAttribute('PerMachine') -ne 'no') {
 if (-not $ghidraPackage.GetAttribute('InstallCommand') -or -not $ghidraPackage.GetAttribute('UninstallCommand')) {
     throw 'Ghidra ExePackage does not define install/uninstall commands'
 }
+if ($ghidraPackage.GetAttribute('DetectCondition') -ne 'GhidraPayloadInstalled') {
+    throw 'Ghidra ExePackage does not detect the extracted payload'
+}
+$fileSearch = @($bundle.SelectNodes('//w:FileSearch', $namespace) |
+    Where-Object { $_.GetAttribute('Variable') -eq 'GhidraPayloadInstalled' })
+if ($fileSearch.Count -ne 1 -or
+    $fileSearch[0].GetAttribute('Result') -ne 'exists' -or
+    $fileSearch[0].GetAttribute('Path') -notmatch '\.ghidralaunch-source\.sha256$') {
+    throw 'Bundle does not detect the Ghidra extraction marker'
+}
+if ($ghidraPackage.GetAttribute('UninstallCommand') -notmatch 'Ghidra\.zip') {
+    throw 'Ghidra uninstall is not source-aware for bundle upgrades'
+}
 $ghidraPayloads = @($ghidraPackage.SelectNodes('w:Payload', $namespace))
 $ghidraZipPayload = $ghidraPayloads | Where-Object { $_.GetAttribute('Name') -eq 'Ghidra.zip' }
 if (-not $ghidraZipPayload) {

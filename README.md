@@ -11,6 +11,9 @@ connection is required during setup), extracts Ghidra into
 `%LocalAppData%\Ghidra Launch\Ghidra`, and automatically sets the user
 environment variable `GHIDRA_HOME` to that location. Sign out and back in
 after installing so shortcuts started by Explorer inherit the new variable.
+The Temurin MSI installs machine-wide and therefore requires administrator
+approval. The setup helper targets .NET Framework 4.8, which must be present
+on Windows before installation.
 
 Both launchers use `GHIDRA_HOME` when set; if it is unset or empty they
 instead look for `ghidraRun.bat` next to the launcher executable (this

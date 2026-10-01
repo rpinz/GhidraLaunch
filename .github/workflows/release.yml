@@ -20,16 +20,23 @@ jobs:
   release:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Resolve release tag
         shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
-          if (-not $tag) { throw 'No release tag provided (set the "tag" input when running this workflow manually)' }
+          $tag = if ($env:EVENT_NAME -eq 'workflow_dispatch') { $env:INPUT_TAG } else { $env:REF_NAME }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'Release tag must match vMAJOR.MINOR.PATCH[-suffix]' }
+          $version = $tag.Substring(1) -replace '-.*$', ''
+          if (($version -split '\.') | Where-Object { [int]$_ -gt 255 }) { throw 'Release version components must be <= 255 for MSI compatibility' }
           Write-Host "Releasing $tag"
           "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # Downloads and checksum-verifies Ghidra.zip and the Temurin JDK MSI into the
       # repo root, and records their download URLs + the required Java version in
@@ -56,7 +63,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
           if (-not $msbuild) { throw 'MSBuild not found' }
-          & $msbuild GhidraLaunch.sln /t:GhidraLaunchSetup /p:Configuration=Release /p:Platform=x64
+          & $msbuild GhidraLaunch.sln /t:GhidraLaunchSetup /p:Configuration=Release /p:Platform=x64 "/p:DefineConstants=ReleaseVersion=$env:RELEASE_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Exercise both launchers
@@ -78,7 +85,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $prerelease = if ($env:RELEASE_TAG -match '-') { '--prerelease' } else { $null }
-          $args = @(
+          $releaseArgs = @(
             'release', 'create', $env:RELEASE_TAG,
             'GhidraLaunchSetup/bin/Release/GhidraLaunchSetup.exe',
             'GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi',
@@ -87,6 +94,6 @@ jobs:
             '--notes', 'These artifacts are UNSIGNED. Sign them per README.md#signing-releases before publishing this draft.',
             '--generate-notes'
           )
-          if ($prerelease) { $args += $prerelease }
-          & gh @args
+          if ($prerelease) { $releaseArgs += $prerelease }
+          & gh @releaseArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -100,7 +100,9 @@ fn launch() -> i32 {
     };
 
     // cmd.exe cannot use a UNC working directory; local paths stay out of its command text
-    let unc = directory.to_string_lossy().starts_with(r"\\");
+    let mut directory_units = directory.as_os_str().encode_wide();
+    let unc = directory_units.next() == Some(b'\\' as u16)
+        && directory_units.next() == Some(b'\\' as u16);
     let percent = directory.as_os_str().encode_wide().any(|unit| unit == b'%' as u16);
     let mut arguments = OsString::from("/d /c ");
     if unc && percent {

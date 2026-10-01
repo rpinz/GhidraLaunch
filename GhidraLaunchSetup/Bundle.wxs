@@ -9,7 +9,9 @@
 <!-- The manufacturer, for setup of package publisher and folder info -->
 <?define Manufacturer = "rpinz" ?>
 <!-- The version number of this setup package -->
-<?define Version = "0.0.0.1" ?>
+<?ifndef ReleaseVersion ?>
+<?define ReleaseVersion = "0.0.0.1" ?>
+<?endif ?>
 <!-- The copyright -->
 <?define Copyright = "The Unlicense" ?>
 <!-- The help url -->
@@ -37,7 +39,7 @@
   <?define GhidraLaunchGhidraHelper_TargetPath=$(var.GhidraLaunchGhidraHelper.TargetPath)?>
   <Bundle Name="$(var.Name)" 
           Manufacturer="$(var.Manufacturer)"
-          Version="$(var.Version)"
+          Version="$(var.ReleaseVersion)"
           AboutUrl="$(var.AboutUrl)"
           HelpUrl="$(var.HelpUrl)"
           Copyright="$(var.Copyright)"
@@ -70,7 +72,8 @@
                   PerMachine="no"
                   Vital="yes"
                   InstallCommand='extract "Ghidra.zip" "[LocalAppDataFolder]$(var.Name)\Ghidra"'
-                  UninstallCommand='remove "[LocalAppDataFolder]$(var.Name)\Ghidra"'>
+                  UninstallCommand='remove "[LocalAppDataFolder]$(var.Name)\Ghidra" "Ghidra.zip"'
+                  DetectCondition="GhidraPayloadInstalled">
         <Payload Id="GhidraZipPayload"
                  Name="Ghidra.zip"
                  SourceFile="$(var.GhidraZip_TargetDir)\Ghidra.zip"
@@ -83,5 +86,9 @@
                   Compressed="yes"
                   Vital="yes" />
     </Chain>
+    <util:FileSearch Id="GhidraPayloadMarker"
+                     Variable="GhidraPayloadInstalled"
+                     Path="[LocalAppDataFolder]$(var.Name)\Ghidra\.ghidralaunch-source.sha256"
+                     Result="exists" />
   </Bundle>
 </Wix>

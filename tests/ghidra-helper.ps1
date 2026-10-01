@@ -57,8 +57,16 @@ try {
         throw 'extract did not re-extract a changed zip'
     }
 
-    # remove: deletes the extracted tree
-    Invoke-Helper @('remove', $dest)
+    # remove from an older bundle: leaves a newer extracted tree in place
+    New-FixtureZip 'newer'
+    Invoke-Helper @('remove', $dest, $zip)
+    if (-not (Test-Path -LiteralPath (Join-Path $dest 'ghidraRun.bat'))) {
+        throw 'remove deleted a Ghidra tree belonging to a newer bundle'
+    }
+
+    # remove: deletes the extracted tree when the source matches
+    New-FixtureZip 'second'
+    Invoke-Helper @('remove', $dest, $zip)
     if (Test-Path -LiteralPath $dest) { throw 'remove did not delete the destination directory' }
 
     Write-Host 'GhidraLaunchGhidraHelper checks passed.'

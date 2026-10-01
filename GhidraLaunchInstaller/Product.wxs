@@ -7,7 +7,9 @@
 <!-- The manufacturer, for setup of package publisher and folder info -->
 <?define Manufacturer = "rpinz" ?>
 <!-- The version number of this setup package -->
-<?define Version = "0.0.0.1" ?>
+<?ifndef ReleaseVersion ?>
+<?define ReleaseVersion = "0.0.0.1" ?>
+<?endif ?>
 <!-- GUIDs -->
 <?define LauncherGuid = "{B3399059-6E9A-436F-8BE0-F0C0E2DA1ADB}" ?>
 <?define CAppGuid = "{8C6EFB53-61EB-484D-9BC8-A20BB455CA88}" ?>
@@ -20,7 +22,7 @@
 
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <!-- Installer properties -->
-  <Product Id="*" Name="$(var.Name)" Manufacturer="$(var.Manufacturer)" Version="$(var.Version)" UpgradeCode="$(var.UpgradeCode)" Language="1033">
+  <Product Id="*" Name="$(var.Name)" Manufacturer="$(var.Manufacturer)" Version="$(var.ReleaseVersion)" UpgradeCode="$(var.UpgradeCode)" Language="1033">
     <!-- Installer package properties -->
     <Package InstallerVersion="301" Compressed="yes" InstallPrivileges="limited" InstallScope="perUser" Manufacturer="$(var.Manufacturer)" />
     <!-- Application icon -->

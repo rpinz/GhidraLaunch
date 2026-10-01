@@ -22,13 +22,14 @@ namespace GhidraLaunchGhidraHelper
                 return Extract(args[1], args[2]) ? 0 : 1;
             }
 
-            if (args.Length == 2 && string.Equals(args[0], "remove", StringComparison.OrdinalIgnoreCase))
+            if ((args.Length == 2 || args.Length == 3) &&
+                string.Equals(args[0], "remove", StringComparison.OrdinalIgnoreCase))
             {
-                return Remove(args[1]) ? 0 : 1;
+                return Remove(args[1], args.Length == 3 ? args[2] : null) ? 0 : 1;
             }
 
             Console.Error.WriteLine("Usage: GhidraLaunchGhidraHelper extract <zipPath> <destDir>");
-            Console.Error.WriteLine("       GhidraLaunchGhidraHelper remove <destDir>");
+            Console.Error.WriteLine("       GhidraLaunchGhidraHelper remove <destDir> [zipPath]");
             return 2;
         }
 
@@ -53,8 +54,11 @@ namespace GhidraLaunchGhidraHelper
                 }
             }
 
-            string tempDir = Path.Combine(Path.GetTempPath(), "GhidraLaunchExtract-" + Guid.NewGuid().ToString("N"));
+            string parentDir = Path.GetDirectoryName(Path.GetFullPath(destDir)) ?? ".";
+            Directory.CreateDirectory(parentDir);
+            string tempDir = Path.Combine(parentDir, "." + Path.GetFileName(destDir) + ".extract-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
+            string backupDir = destDir + ".old-" + Guid.NewGuid().ToString("N");
             try
             {
                 ZipFile.ExtractToDirectory(zipPath, tempDir);
@@ -63,15 +67,30 @@ namespace GhidraLaunchGhidraHelper
 
                 if (Directory.Exists(destDir))
                 {
-                    Directory.Delete(destDir, recursive: true);
+                    Directory.Move(destDir, backupDir);
                 }
 
-                Directory.CreateDirectory(Path.GetDirectoryName(destDir) ?? destDir);
                 Directory.Move(sourceRoot, destDir);
 
                 File.WriteAllText(Path.Combine(destDir, MarkerFileName), hash);
+                if (Directory.Exists(backupDir))
+                {
+                    Directory.Delete(backupDir, recursive: true);
+                }
                 Console.WriteLine($"Extracted Ghidra to {destDir}.");
                 return true;
+            }
+            catch
+            {
+                if (Directory.Exists(destDir))
+                {
+                    Directory.Delete(destDir, recursive: true);
+                }
+                if (Directory.Exists(backupDir))
+                {
+                    Directory.Move(backupDir, destDir);
+                }
+                throw;
             }
             finally
             {
@@ -95,10 +114,27 @@ namespace GhidraLaunchGhidraHelper
             return extractedDir;
         }
 
-        private static bool Remove(string destDir)
+        private static bool Remove(string destDir, string zipPath)
         {
             if (Directory.Exists(destDir))
             {
+                if (!string.IsNullOrEmpty(zipPath))
+                {
+                    string markerPath = Path.Combine(destDir, MarkerFileName);
+                    if (!File.Exists(zipPath) || !File.Exists(markerPath))
+                    {
+                        Console.WriteLine($"Skipping removal of {destDir}; the package source is unavailable.");
+                        return true;
+                    }
+
+                    string expected = ComputeSha256(zipPath);
+                    string existing = File.ReadAllText(markerPath).Trim();
+                    if (!string.Equals(existing, expected, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine($"Skipping removal of {destDir}; it belongs to another Ghidra package.");
+                        return true;
+                    }
+                }
                 Directory.Delete(destDir, recursive: true);
                 Console.WriteLine($"Removed {destDir}.");
             }
