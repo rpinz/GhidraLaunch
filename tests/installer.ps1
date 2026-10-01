@@ -1,8 +1,19 @@
-param([Parameter(Mandatory)][string]$MsiPath)
+param(
+    [Parameter(Mandatory)][string]$MsiPath,
+    [string]$ExpectedVersion
+)
 
 $ErrorActionPreference = 'Stop'
 $installer = New-Object -ComObject WindowsInstaller.Installer
-$database = $installer.OpenDatabase((Resolve-Path -LiteralPath $MsiPath).Path, 0)
+$resolvedMsiPath = (Resolve-Path -LiteralPath $MsiPath).Path
+$database = $installer.OpenDatabase($resolvedMsiPath, 0)
+$summary = $installer.SummaryInformation($resolvedMsiPath, 0)
+if ($summary.Property(2) -ne 'Ghidra Launch') {
+    throw "MSI SummaryInformation Subject must be 'Ghidra Launch' (found '$($summary.Property(2))')"
+}
+if ($summary.Property(3) -ne 'rpinz') {
+    throw "MSI SummaryInformation Author must be 'rpinz' (found '$($summary.Property(3))')"
+}
 
 function Read-Rows($sql, $columns) {
     $view = $database.OpenView($sql)
@@ -18,6 +29,17 @@ function Read-Rows($sql, $columns) {
         $view.Close()
     }
     return $result
+}
+
+$productProperties = @{}
+foreach ($row in @(Read-Rows 'SELECT `Property`, `Value` FROM `Property`' 2)) {
+    $productProperties[$row.Column1] = $row.Column2
+}
+if ($productProperties['ProductName'] -ne 'Ghidra Launch') {
+    throw "MSI ProductName must be 'Ghidra Launch' (found '$($productProperties['ProductName'])')"
+}
+if ($ExpectedVersion -and $productProperties['ProductVersion'] -ne $ExpectedVersion) {
+    throw "MSI ProductVersion '$($productProperties['ProductVersion'])' does not match '$ExpectedVersion'"
 }
 
 $files = @(Read-Rows 'SELECT `File`.`FileName`, `Component`.`Directory_` FROM `File`, `Component` WHERE `File`.`Component_` = `Component`.`Component`' 2)

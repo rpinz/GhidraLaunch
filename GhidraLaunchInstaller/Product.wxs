@@ -24,7 +24,7 @@
   <!-- Installer properties -->
   <Product Id="*" Name="$(var.Name)" Manufacturer="$(var.Manufacturer)" Version="$(var.ReleaseVersion)" UpgradeCode="$(var.UpgradeCode)" Language="1033">
     <!-- Installer package properties -->
-    <Package InstallerVersion="301" Compressed="yes" InstallPrivileges="limited" InstallScope="perUser" Manufacturer="$(var.Manufacturer)" />
+    <Package InstallerVersion="301" Compressed="yes" InstallPrivileges="limited" InstallScope="perUser" Manufacturer="$(var.Manufacturer)" Description="$(var.Name)" />
     <!-- Application icon -->
     <Icon Id="Logo.ico" SourceFile="$(var.SolutionDir)\Resources\Ghidra.ico" />
     <!-- Application logo for Control Panel -->

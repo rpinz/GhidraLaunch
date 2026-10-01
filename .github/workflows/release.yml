@@ -1,4 +1,4 @@
-name: Build and draft setup bundle release
+name: Build and publish signed setup bundle release
 
 on:
   push:
@@ -11,16 +11,32 @@ on:
           Release tag to publish (e.g. v1.0.0). Required when running this
           workflow manually; ignored on a tag push, where the pushed tag is
           used instead.
+        required: true
+      allow_unsigned_initial_release:
+        description: >-
+          Allow the initial public release only to be published unsigned before
+          SignPath enrollment. This is accepted only while no public releases exist.
+        type: boolean
         required: false
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     runs-on: windows-2022
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Resolve release tag
         shell: pwsh
@@ -28,10 +44,49 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ALLOW_UNSIGNED_INITIAL_RELEASE: ${{ inputs.allow_unsigned_initial_release }}
+          SIGNPATH_ENABLED: ${{ vars.SIGNPATH_ENABLED }}
+          SIGNPATH_POLICY_READY: ${{ vars.SIGNPATH_POLICY_READY }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          SIGNPATH_LAUNCHERS_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_LAUNCHERS_ARTIFACT_CONFIGURATION_SLUG }}
+          SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }}
+          SIGNPATH_SETUP_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_SETUP_ARTIFACT_CONFIGURATION_SLUG }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:EVENT_NAME -eq 'workflow_dispatch' -and $env:GITHUB_REF -ne "refs/heads/$env:DEFAULT_BRANCH") {
+            throw 'Run manual releases from the default branch'
+          }
           $tag = if ($env:EVENT_NAME -eq 'workflow_dispatch') { $env:INPUT_TAG } else { $env:REF_NAME }
           if ($tag -notmatch '^v\d+\.\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?$') { throw 'Release tag must match vMAJOR.MINOR.PATCH[.REVISION][-suffix]' }
+          git rev-parse --verify "refs/tags/$tag^{commit}" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Tag $tag was not checked out" }
+          $tagCommit = (git rev-parse "refs/tags/$tag^{commit}").Trim()
+          $headCommit = (git rev-parse HEAD).Trim()
+          if ($tagCommit -ne $headCommit) { throw "Checkout does not match tag $tag" }
+          $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/$tag"
+          $release = Invoke-WebRequest -Uri $url -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' } -SkipHttpErrorCheck
+          if ($release.StatusCode -eq 200) { throw "Release $tag already exists; refusing to replace or publish its assets" }
+          if ($release.StatusCode -ne 404) { throw "Release lookup failed: HTTP $($release.StatusCode)" }
+          $signPathEnabled = $env:SIGNPATH_ENABLED -eq 'true'
+          if (-not $signPathEnabled) {
+            if ($env:EVENT_NAME -ne 'workflow_dispatch' -or $env:ALLOW_UNSIGNED_INITIAL_RELEASE -ne 'true') {
+              throw 'SignPath signing is not enabled. Only a manually dispatched initial release may be published unsigned.'
+            }
+            $releases = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases?per_page=1" -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' })
+            if ($releases.Count -gt 0) { throw 'Unsigned bootstrap releases are only allowed before the first public release' }
+          } else {
+            foreach ($name in @('SIGNPATH_API_TOKEN', 'SIGNPATH_ORGANIZATION_ID', 'SIGNPATH_PROJECT_SLUG', 'SIGNPATH_SIGNING_POLICY_SLUG', 'SIGNPATH_LAUNCHERS_ARTIFACT_CONFIGURATION_SLUG', 'SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG', 'SIGNPATH_SETUP_ARTIFACT_CONFIGURATION_SLUG')) {
+              if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Missing required SignPath setting: $name" }
+            }
+            if ($env:SIGNPATH_POLICY_READY -ne 'true') {
+              throw 'Set SIGNPATH_POLICY_READY=true only after eligibility confirmation, MFA and signing roles are configured, and the Code signing policy is complete.'
+            }
+          }
           $version = $tag.Substring(1) -replace '-.*$', ''
           $components = $version -split '\.'
           if ($components | Where-Object { [int]$_ -gt 255 }) { throw 'Release version components must be <= 255 for Windows compatibility' }
@@ -44,6 +99,7 @@ jobs:
           #ifndef GHIDRA_LAUNCH_VERSION
           #define GHIDRA_LAUNCH_VERSION "$fileVersion"
           #define GHIDRA_LAUNCH_FILEVERSION $($fileVersion -replace '\.', ',')
+          #define GHIDRA_LAUNCH_PRODUCT_VERSION "$msiVersion"
           #endif
           "@ | Set-Content -Path Resources/Version.h -Encoding ascii
 
@@ -65,17 +121,188 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $msbuild GhidraLaunchRS/GhidraLaunchRS.vcxproj /t:Build /p:Configuration=Release /p:Platform=x64 /p:SolutionDir=$solutionDir
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $msbuild GhidraLaunchGhidraHelper/GhidraLaunchGhidraHelper.csproj /t:Build /p:Configuration=Release /p:Version=$env:RELEASE_VERSION /restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build MSI and setup bundle
+      - name: Verify first-party executable metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $paths = @(
+            'GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe',
+            'GhidraLaunchRS/GhidraLaunchRS.exe',
+            'GhidraLaunchGhidraHelper/bin/Release/net48/GhidraLaunchGhidraHelper.exe'
+          )
+          foreach ($path in $paths) {
+            $version = (Get-Item -LiteralPath $path).VersionInfo
+            if ($version.ProductName -ne 'Ghidra Launch') { throw "$path has unexpected ProductName '$($version.ProductName)'" }
+            if ($version.ProductVersion -ne $env:RELEASE_VERSION) { throw "$path has ProductVersion '$($version.ProductVersion)', expected '$env:RELEASE_VERSION'" }
+          }
+
+      - name: Upload first-party executables for signing
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $staging = Join-Path $env:RUNNER_TEMP 'signpath-first-party'
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe $staging
+          Copy-Item GhidraLaunchRS/GhidraLaunchRS.exe $staging
+          Copy-Item GhidraLaunchGhidraHelper/bin/Release/net48/GhidraLaunchGhidraHelper.exe $staging
+
+      - name: Hand off first-party executables
+        if: vars.SIGNPATH_ENABLED == 'true'
+        id: unsigned_executables
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signpath-first-party
+          path: ${{ runner.temp }}/signpath-first-party/
+          if-no-files-found: error
+
+      - name: Submit first-party executables for SignPath approval and signing
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: SignPath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_LAUNCHERS_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned_executables.outputs.artifact-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: ${{ runner.temp }}/signed-first-party
+          parameters: |
+            version: "${{ env.RELEASE_VERSION }}"
+
+      - name: Restore signed first-party executables
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(
+            @{ Name = 'GhidraLaunchC.exe'; Path = 'GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe' },
+            @{ Name = 'GhidraLaunchRS.exe'; Path = 'GhidraLaunchRS/GhidraLaunchRS.exe' },
+            @{ Name = 'GhidraLaunchGhidraHelper.exe'; Path = 'GhidraLaunchGhidraHelper/bin/Release/net48/GhidraLaunchGhidraHelper.exe' }
+          )
+          foreach ($file in $files) {
+            $matches = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed-first-party') -Filter $file.Name -File -Recurse)
+            if ($matches.Count -ne 1) { throw "Expected one signed $($file.Name); found $($matches.Count)" }
+            $signature = Get-AuthenticodeSignature -LiteralPath $matches[0].FullName
+            if ($signature.Status -ne 'Valid') { throw "Invalid Authenticode signature for $($file.Name): $($signature.StatusMessage)" }
+            Copy-Item -LiteralPath $matches[0].FullName -Destination $file.Path -Force
+          }
+
+      - name: Build launcher MSI
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
           if (-not $msbuild) { throw 'MSBuild not found' }
-          & $msbuild GhidraLaunchGhidraHelper/GhidraLaunchGhidraHelper.csproj /t:Build /p:Configuration=Release /restore
+          & $msbuild GhidraLaunch.sln /t:GhidraLaunchInstaller /p:Configuration=Release /p:Platform=x64 "/p:DefineConstants=ReleaseVersion=$env:RELEASE_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $msbuild GhidraLaunch.sln /t:GhidraLaunchSetup /p:Configuration=Release /p:Platform=x64 "/p:DefineConstants=ReleaseVersion=$env:RELEASE_VERSION"
+
+      - name: Stage MSI for SignPath
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $staging = Join-Path $env:RUNNER_TEMP 'signpath-msi'
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi $staging
+
+      - name: Hand off MSI
+        if: vars.SIGNPATH_ENABLED == 'true'
+        id: unsigned_msi
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signpath-msi
+          path: ${{ runner.temp }}/signpath-msi/
+          if-no-files-found: error
+
+      - name: Submit MSI for SignPath approval and signing
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: SignPath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned_msi.outputs.artifact-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: ${{ runner.temp }}/signed-msi
+          parameters: |
+            version: "${{ env.RELEASE_VERSION }}"
+
+      - name: Restore signed MSI
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $matches = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed-msi') -Filter GhidraLaunchInstaller.msi -File -Recurse)
+          if ($matches.Count -ne 1) { throw "Expected one signed MSI; found $($matches.Count)" }
+          $signature = Get-AuthenticodeSignature -LiteralPath $matches[0].FullName
+          if ($signature.Status -ne 'Valid') { throw "Invalid MSI Authenticode signature: $($signature.StatusMessage)" }
+          Copy-Item -LiteralPath $matches[0].FullName -Destination GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi -Force
+
+      - name: Build setup bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild not found' }
+          & $msbuild GhidraLaunch.sln /t:GhidraLaunchSetup /p:Configuration=Release /p:Platform=x64 "/p:DefineConstants=ReleaseVersion=$env:RELEASE_VERSION" "/p:Version=$env:RELEASE_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stage setup bundle for SignPath
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $staging = Join-Path $env:RUNNER_TEMP 'signpath-setup'
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item GhidraLaunchSetup/bin/Release/GhidraLaunchSetup.exe $staging
+
+      - name: Hand off setup bundle
+        if: vars.SIGNPATH_ENABLED == 'true'
+        id: unsigned_setup
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signpath-setup
+          path: ${{ runner.temp }}/signpath-setup/
+          if-no-files-found: error
+
+      - name: Submit setup bundle for SignPath approval and signing
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: SignPath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_SETUP_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned_setup.outputs.artifact-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: ${{ runner.temp }}/signed-setup
+          parameters: |
+            version: "${{ env.RELEASE_VERSION }}"
+
+      - name: Restore signed setup bundle
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $matches = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed-setup') -Filter GhidraLaunchSetup.exe -File -Recurse)
+          if ($matches.Count -ne 1) { throw "Expected one signed setup bundle; found $($matches.Count)" }
+          $signature = Get-AuthenticodeSignature -LiteralPath $matches[0].FullName
+          if ($signature.Status -ne 'Valid') { throw "Invalid setup Authenticode signature: $($signature.StatusMessage)" }
+          Copy-Item -LiteralPath $matches[0].FullName -Destination GhidraLaunchSetup/bin/Release/GhidraLaunchSetup.exe -Force
 
       - name: Exercise both launchers
         shell: pwsh
@@ -87,7 +314,81 @@ jobs:
 
       - name: Inspect MSI layout
         shell: pwsh
-        run: ./tests/installer.ps1 -MsiPath GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi
+        run: ./tests/installer.ps1 -MsiPath GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi -ExpectedVersion $env:RELEASE_VERSION
+
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Syft
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'syft_1.52.0_windows_amd64.zip'
+          Invoke-WebRequest -Uri 'https://github.com/anchore/syft/releases/download/v1.52.0/syft_1.52.0_windows_amd64.zip' -OutFile $archive
+          $expected = 'de787a374cf961c56fd7b206b2e183295abba32d0af3cb44d9aef2357ca9eda2'
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) { throw 'Syft archive checksum mismatch' }
+          $location = Join-Path $env:RUNNER_TEMP 'release-syft'
+          Expand-Archive -LiteralPath $archive -DestinationPath $location
+          $binary = Join-Path $location 'syft.exe'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Syft executable not found in verified archive' }
+          "SYFT_CMD=$binary" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Generate and validate release SBOMs
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/release_sbom.py --tag $env:RELEASE_TAG --syft $env:SYFT_CMD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Hand off release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-files
+          path: release-assets/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: windows-2022
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      SIGNPATH_ENABLED: ${{ vars.SIGNPATH_ENABLED }}
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Retrieve release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-files
+          path: release-assets/
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+        with:
+          cosign-release: v3.0.6
+
+      - name: Sign and verify release files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identity = "https://github.com/$env:GITHUB_WORKFLOW_REF"
+          $files = @(
+            'release-assets/GhidraLaunchSetup.exe',
+            'release-assets/GhidraLaunchInstaller.msi',
+            'release-assets/GhidraLaunch.spdx.json',
+            'release-assets/GhidraLaunch.cyclonedx.json'
+          )
+          $names = @('GhidraLaunchSetup.exe', 'GhidraLaunchInstaller.msi', 'GhidraLaunch.spdx.json', 'GhidraLaunch.cyclonedx.json')
+          for ($i = 0; $i -lt $files.Count; $i++) {
+            $bundle = "release-assets/$($names[$i]).sigstore.json"
+            & cosign sign-blob --yes --bundle $bundle $files[$i]
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & cosign verify-blob --bundle $bundle --certificate-identity $identity --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-github-workflow-repository $env:GITHUB_REPOSITORY --certificate-github-workflow-ref $env:GITHUB_REF $files[$i]
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       - name: Publish GitHub release
         shell: pwsh
@@ -96,15 +397,47 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $prerelease = if ($env:RELEASE_TAG -match '-') { '--prerelease' } else { $null }
+          $notes = if ($env:SIGNPATH_ENABLED -eq 'true') {
+            'Windows artifacts have Authenticode signatures provided by SignPath Foundation. SBOMs and published assets also have keyless Sigstore signatures. Code signing policy: https://github.com/rpinz/GhidraLaunch#code-signing-policy'
+          } else {
+            'Initial bootstrap release: Windows artifacts are not Authenticode-signed. SBOMs and published assets have keyless Sigstore signatures. Code signing policy: https://github.com/rpinz/GhidraLaunch#code-signing-policy'
+          }
+          $assets = @(
+            'release-assets/GhidraLaunchSetup.exe',
+            'release-assets/GhidraLaunchInstaller.msi',
+            'release-assets/GhidraLaunch.spdx.json',
+            'release-assets/GhidraLaunch.cyclonedx.json',
+            'release-assets/GhidraLaunchSetup.exe.sigstore.json',
+            'release-assets/GhidraLaunchInstaller.msi.sigstore.json',
+            'release-assets/GhidraLaunch.spdx.json.sigstore.json',
+            'release-assets/GhidraLaunch.cyclonedx.json.sigstore.json'
+          )
+          foreach ($asset in $assets) {
+            if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Missing release asset: $asset" }
+          }
           $releaseArgs = @(
             'release', 'create', $env:RELEASE_TAG,
-            'GhidraLaunchSetup/bin/Release/GhidraLaunchSetup.exe',
-            'GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi',
+            '--verify-tag',
             '--draft',
             '--title', $env:RELEASE_TAG,
-            '--notes', 'These artifacts are UNSIGNED. Sign them per README.md#signing-releases before publishing this draft.',
+            '--notes', $notes,
             '--generate-notes'
           )
           if ($prerelease) { $releaseArgs += $prerelease }
           & gh @releaseArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & gh release upload $env:RELEASE_TAG @assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $download = Join-Path $env:RUNNER_TEMP 'release-asset-validation'
+          New-Item -ItemType Directory -Path $download -Force | Out-Null
+          & gh release download $env:RELEASE_TAG --dir $download
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $uploaded = @(Get-ChildItem -LiteralPath $download -File)
+          if ($uploaded.Count -ne $assets.Count) { throw "Expected $($assets.Count) uploaded assets; found $($uploaded.Count)" }
+          foreach ($asset in $assets) {
+            $localHash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash
+            $remoteHash = (Get-FileHash -LiteralPath (Join-Path $download (Split-Path $asset -Leaf)) -Algorithm SHA256).Hash
+            if ($localHash -ne $remoteHash) { throw "Uploaded asset differs from verified local file: $asset" }
+          }
+          & gh release edit $env:RELEASE_TAG --draft=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

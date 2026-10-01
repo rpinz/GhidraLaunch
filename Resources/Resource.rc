@@ -84,8 +84,8 @@ BEGIN
             VALUE "InternalName", "GhidraLaunch.exe"
             VALUE "LegalCopyright", "The Unlicense"
             VALUE "OriginalFilename", "GhidraLaunch.exe"
-            VALUE "ProductName", "GhidraLaunch"
-            VALUE "ProductVersion", GHIDRA_LAUNCH_VERSION
+            VALUE "ProductName", "Ghidra Launch"
+            VALUE "ProductVersion", GHIDRA_LAUNCH_PRODUCT_VERSION
         END
     END
     BLOCK "VarFileInfo"
