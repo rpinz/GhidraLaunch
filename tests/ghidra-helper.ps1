@@ -16,7 +16,7 @@ $dest = Join-Path $scratch 'dest'
 
 function Invoke-Helper {
     param([string[]]$HelperArgs)
-    $process = Start-Process -FilePath $helper -ArgumentList $HelperArgs -PassThru -Wait -NoNewWindow -PassThru
+    $process = Start-Process -FilePath $helper -ArgumentList $HelperArgs -PassThru -Wait -NoNewWindow
     if ($process.ExitCode -ne 0) { throw "GhidraLaunchGhidraHelper $($HelperArgs -join ' ') exited $($process.ExitCode)" }
 }
 
