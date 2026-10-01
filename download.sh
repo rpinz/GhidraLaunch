@@ -47,9 +47,21 @@ download() {
   echo "  [✔️]"
 }
 
+# XML-escape a value for use inside a WiX preprocessor <?define ?> string
+xml_escape() {
+  local value="$1"
+  value="${value//&/&amp;}"
+  value="${value//</&lt;}"
+  value="${value//>/&gt;}"
+  value="${value//\"/&quot;}"
+  printf '%s' "${value}"
+}
+
 status=0
 ghidra_downloaded=0
 java_version=""
+ghidra_url=""
+jdk_url=""
 versions_file="GhidraLaunchSetup/Versions.wxi"
 rm -f "${versions_file}"
 
@@ -87,6 +99,7 @@ if download "Latest Ghidra" \
   "${ghidra_checksum}" \
   "Ghidra.zip"; then
   ghidra_downloaded=1
+  ghidra_url="$(jq -r '.browser_download_url // empty' <<<"${ghidra_asset}")"
 else
   status=1
 fi
@@ -105,16 +118,24 @@ if [[ "${ghidra_downloaded}" -eq 1 ]]; then
       # Temurin OpenJDK MSI, checksum published by Adoptium
       jdk_api="https://api.adoptium.net/v3/assets/latest/${java_version}/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
       jdk_json="$(curl --silent --show-error --fail "${jdk_api}")" || jdk_json="[]"
-      download "Latest Temurin OpenJDK ${java_version}" \
+      if download "Latest Temurin OpenJDK ${java_version}" \
         "$(jq -r '.[0].binary.installer.link // empty' <<<"${jdk_json}")" \
         "$(jq -r '.[0].binary.installer.checksum // empty' <<<"${jdk_json}")" \
-        "OpenJDK${java_version}U-jdk_x64.msi" || status=1
+        "OpenJDK${java_version}U-jdk_x64.msi"; then
+        jdk_url="$(jq -r '.[0].binary.installer.link // empty' <<<"${jdk_json}")"
+      else
+        status=1
+      fi
     fi
   fi
 fi
 
 if [[ "${status}" -eq 0 ]]; then
-  printf '<?define JavaVersion = "%s" ?>\n' "${java_version}" > "${versions_file}"
+  {
+    printf '<?define JavaVersion = "%s" ?>\n' "${java_version}"
+    printf '<?define JavaDownloadUrl = "%s" ?>\n' "$(xml_escape "${jdk_url}")"
+    printf '<?define GhidraDownloadUrl = "%s" ?>\n' "$(xml_escape "${ghidra_url}")"
+  } > "${versions_file}"
 fi
 
 exit "${status}"

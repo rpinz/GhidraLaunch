@@ -1,0 +1,92 @@
+name: Build and draft setup bundle release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Release tag to publish (e.g. v1.0.0). Required when running this
+          workflow manually; ignored on a tag push, where the pushed tag is
+          used instead.
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Resolve release tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
+          if (-not $tag) { throw 'No release tag provided (set the "tag" input when running this workflow manually)' }
+          Write-Host "Releasing $tag"
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Downloads and checksum-verifies Ghidra.zip and the Temurin JDK MSI into the
+      # repo root, and records their download URLs + the required Java version in
+      # GhidraLaunchSetup/Versions.wxi for the bundle to reference at build time.
+      - name: Download Ghidra and Temurin
+        shell: pwsh
+        run: ./download.ps1
+
+      - name: Build C and Rust launchers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild not found' }
+          $solutionDir = (Get-Location).Path + '\'
+          & $msbuild GhidraLaunchC/GhidraLaunchC.vcxproj /t:Build /p:Configuration=Release /p:Platform=x64 /p:SolutionDir=$solutionDir /m
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $msbuild GhidraLaunchRS/GhidraLaunchRS.vcxproj /t:Build /p:Configuration=Release /p:Platform=x64 /p:SolutionDir=$solutionDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build MSI and setup bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild not found' }
+          & $msbuild GhidraLaunch.sln /t:GhidraLaunchSetup /p:Configuration=Release /p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Exercise both launchers
+        shell: pwsh
+        run: ./tests/launchers.ps1 -Configuration Release
+
+      - name: Exercise the Ghidra extraction helper
+        shell: pwsh
+        run: ./tests/ghidra-helper.ps1 -Configuration Release
+
+      - name: Inspect MSI layout
+        shell: pwsh
+        run: ./tests/installer.ps1 -MsiPath GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prerelease = if ($env:RELEASE_TAG -match '-') { '--prerelease' } else { $null }
+          $args = @(
+            'release', 'create', $env:RELEASE_TAG,
+            'GhidraLaunchSetup/bin/Release/GhidraLaunchSetup.exe',
+            'GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi',
+            '--draft',
+            '--title', $env:RELEASE_TAG,
+            '--notes', 'These artifacts are UNSIGNED. Sign them per README.md#signing-releases before publishing this draft.',
+            '--generate-notes'
+          )
+          if ($prerelease) { $args += $prerelease }
+          & gh @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

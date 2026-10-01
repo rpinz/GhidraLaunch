@@ -37,6 +37,12 @@ function Download-Verified {
     }
 }
 
+function Escape-XmlAttribute {
+    param([string]$Value)
+    if (-not $Value) { return '' }
+    return $Value -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;'
+}
+
 if (Test-Path -LiteralPath $versionsFile) {
     Remove-Item -LiteralPath $versionsFile -Force
 }
@@ -123,7 +129,9 @@ if (Download-Verified 'Latest Ghidra' $asset.browser_download_url $ghidraChecksu
         }
         $jdk = $jdkAssets | Select-Object -First 1
         $jdkMsi = Join-Path $PSScriptRoot "OpenJDK${javaVersion}U-jdk_x64.msi"
-        if (-not (Download-Verified "Latest Temurin OpenJDK $javaVersion" $jdk.binary.installer.link $jdk.binary.installer.checksum $jdkMsi)) {
+        if (Download-Verified "Latest Temurin OpenJDK $javaVersion" $jdk.binary.installer.link $jdk.binary.installer.checksum $jdkMsi) {
+            $jdkUrl = $jdk.binary.installer.link
+        } else {
             $status = 1
         }
     } catch {
@@ -135,7 +143,12 @@ if (Download-Verified 'Latest Ghidra' $asset.browser_download_url $ghidraChecksu
 }
 
 if ($status -eq 0) {
-    [System.IO.File]::WriteAllText($versionsFile, ('<?define JavaVersion = "{0}" ?>' -f $javaVersion) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+    $lines = @(
+        ('<?define JavaVersion = "{0}" ?>' -f $javaVersion),
+        ('<?define JavaDownloadUrl = "{0}" ?>' -f (Escape-XmlAttribute $jdkUrl)),
+        ('<?define GhidraDownloadUrl = "{0}" ?>' -f (Escape-XmlAttribute $asset.browser_download_url))
+    )
+    [System.IO.File]::WriteAllText($versionsFile, ($lines -join [Environment]::NewLine) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 }
 
 exit $status

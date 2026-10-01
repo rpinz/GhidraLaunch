@@ -27,9 +27,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $msbuild GhidraLaunchRS/GhidraLaunchRS.vcxproj /t:Rebuild /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /p:SolutionDir=$solutionDir
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $msbuild GhidraLaunchGhidraHelper/GhidraLaunchGhidraHelper.csproj /t:Build /p:Configuration=${{ matrix.configuration }} /restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise both launchers
         shell: pwsh
         run: ./tests/launchers.ps1 -Configuration ${{ matrix.configuration }}
+      - name: Exercise the Ghidra extraction helper
+        shell: pwsh
+        run: ./tests/ghidra-helper.ps1 -Configuration ${{ matrix.configuration }}
       - name: Build and inspect MSI layout
         if: matrix.configuration == 'Release'
         shell: pwsh

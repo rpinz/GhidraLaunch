@@ -97,6 +97,8 @@
         <CreateFolder />
         <RemoveFolder Id="RemoveINSTALLFOLDER" On="uninstall" />
         <RegistryValue Id="LauncherComponent" Name="Ghidra" Root="HKCU" Key="Software\$(var.Manufacturer)\$(var.Name)" Type="integer" Value="1" KeyPath="yes" />
+        <!-- Point GHIDRA_HOME at the Ghidra copy the setup bundle extracts alongside the launcher -->
+        <Environment Id="GhidraHomeEnv" Name="GHIDRA_HOME" Value="[INSTALLFOLDER]Ghidra" Permanent="no" Part="all" Action="set" System="no" />
       </Component>
       <Component Id="CLauncherComponent" Guid="$(var.CAppGuid)">
         <File Id="CLauncherComponent" Name="$(var.GhidraLaunchC.TargetFileName)" Source="$(var.GhidraLaunchC.TargetPath)" Checksum="yes" />

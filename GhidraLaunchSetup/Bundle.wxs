@@ -32,7 +32,9 @@
      xmlns:bal="http://schemas.microsoft.com/wix/BalExtension"
      xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
   <?define Java_TargetDir=".."?>
+  <?define GhidraZip_TargetDir=".."?>
   <?define GhidraLaunchInstaller_TargetDir=$(var.GhidraLaunchInstaller.TargetDir)?>
+  <?define GhidraLaunchGhidraHelper_TargetPath=$(var.GhidraLaunchGhidraHelper.TargetPath)?>
   <Bundle Name="$(var.Name)" 
           Manufacturer="$(var.Manufacturer)"
           Version="$(var.Version)"
@@ -53,11 +55,28 @@
         SuppressRepair="yes" />
   </BootstrapperApplicationRef>
   <Chain>
-      <!-- Java -->
+      <!-- Java: fetched at install time rather than embedded, to keep the bundle small -->
       <MsiPackage DisplayName="Eclipse Temurin OpenJDK $(var.JavaVersion)"
                   SourceFile="$(var.Java_TargetDir)\OpenJDK$(var.JavaVersion)U-jdk_x64.msi"
-                  Compressed="yes"
+                  Compressed="no"
+                  DownloadUrl="$(var.JavaDownloadUrl)"
                   Vital="yes" />
+      <!-- Ghidra: extracted at install time by GhidraLaunchGhidraHelper from Ghidra.zip,
+           itself fetched at install time rather than embedded, into
+           %LocalAppData%\Ghidra Launch\Ghidra (per-user, no elevation). -->
+      <ExePackage DisplayName="Ghidra"
+                  SourceFile="$(var.GhidraLaunchGhidraHelper_TargetPath)"
+                  Compressed="yes"
+                  PerMachine="no"
+                  Vital="yes"
+                  InstallCommand='extract "Ghidra.zip" "[LocalAppDataFolder]$(var.Name)\Ghidra"'
+                  UninstallCommand='remove "[LocalAppDataFolder]$(var.Name)\Ghidra"'>
+        <Payload Id="GhidraZipPayload"
+                 Name="Ghidra.zip"
+                 SourceFile="$(var.GhidraZip_TargetDir)\Ghidra.zip"
+                 Compressed="no"
+                 DownloadUrl="$(var.GhidraDownloadUrl)" />
+      </ExePackage>
       <!-- GhidraLaunchInstaller.msi -->
       <MsiPackage DisplayName="$(var.Name)"
                   SourceFile="$(var.GhidraLaunchInstaller_TargetDir)\GhidraLaunchInstaller.msi"

@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GhidraLaunchC", "GhidraLaun
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GhidraLaunchRS", "GhidraLaunchRS\GhidraLaunchRS.vcxproj", "{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GhidraLaunchGhidraHelper", "GhidraLaunchGhidraHelper\GhidraLaunchGhidraHelper.csproj", "{C71768D8-E9C4-475A-A084-4A774FD65D15}"
+EndProject
 Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchInstaller", "GhidraLaunchInstaller\GhidraLaunchInstaller.wixproj", "{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}"
 	ProjectSection(ProjectDependencies) = postProject
 		{671351BD-21DE-45FC-813C-9644A41FE38F} = {671351BD-21DE-45FC-813C-9644A41FE38F}
@@ -16,6 +18,7 @@ EndProject
 Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchSetup", "GhidraLaunchSetup\GhidraLaunchSetup.wixproj", "{54D4ADC7-1FFC-4207-9152-50FE58F28D7F}"
 	ProjectSection(ProjectDependencies) = postProject
 		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE} = {FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}
+		{C71768D8-E9C4-475A-A084-4A774FD65D15} = {C71768D8-E9C4-475A-A084-4A774FD65D15}
 	EndProjectSection
 EndProject
 Global
@@ -32,6 +35,10 @@ Global
 		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}.Debug|x64.Build.0 = Debug|x64
 		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}.Release|x64.ActiveCfg = Release|x64
 		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}.Release|x64.Build.0 = Release|x64
+		{C71768D8-E9C4-475A-A084-4A774FD65D15}.Debug|x64.ActiveCfg = Debug|x64
+		{C71768D8-E9C4-475A-A084-4A774FD65D15}.Debug|x64.Build.0 = Debug|x64
+		{C71768D8-E9C4-475A-A084-4A774FD65D15}.Release|x64.ActiveCfg = Release|x64
+		{C71768D8-E9C4-475A-A084-4A774FD65D15}.Release|x64.Build.0 = Release|x64
 		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}.Debug|x64.ActiveCfg = Debug|x86
 		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}.Release|x64.ActiveCfg = Release|x86
 		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}.Release|x64.Build.0 = Release|x86
