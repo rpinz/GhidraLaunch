@@ -12,6 +12,7 @@ if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw "Missing helpe
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
 $fixtureRoot = Join-Path $scratch 'ghidra_11.4_PUBLIC'
 $zip = Join-Path $scratch 'fixture.zip'
+$matchingZip = Join-Path $scratch 'second.zip'
 $dest = Join-Path $scratch 'dest'
 
 function Invoke-Helper {
@@ -56,6 +57,7 @@ try {
     if ((Get-Content -LiteralPath (Join-Path $dest 'support/x.txt') -Raw).Trim() -ne 'second') {
         throw 'extract did not re-extract a changed zip'
     }
+    Copy-Item -LiteralPath $zip -Destination $matchingZip
 
     # remove from an older bundle: leaves a newer extracted tree in place
     New-FixtureZip 'newer'
@@ -63,10 +65,8 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $dest 'ghidraRun.bat'))) {
         throw 'remove deleted a Ghidra tree belonging to a newer bundle'
     }
-
     # remove: deletes the extracted tree when the source matches
-    New-FixtureZip 'second'
-    Invoke-Helper @('remove', $dest, $zip)
+    Invoke-Helper @('remove', $dest, $matchingZip)
     if (Test-Path -LiteralPath $dest) { throw 'remove did not delete the destination directory' }
 
     Write-Host 'GhidraLaunchGhidraHelper checks passed.'
