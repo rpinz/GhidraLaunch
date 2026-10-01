@@ -72,6 +72,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
           if (-not $msbuild) { throw 'MSBuild not found' }
+          & $msbuild GhidraLaunchGhidraHelper/GhidraLaunchGhidraHelper.csproj /t:Build /p:Configuration=Release /restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $msbuild GhidraLaunch.sln /t:GhidraLaunchSetup /p:Configuration=Release /p:Platform=x64 "/p:DefineConstants=ReleaseVersion=$env:RELEASE_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
