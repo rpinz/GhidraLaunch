@@ -20,6 +20,19 @@
     <CompilerAdditionalOptions>
     </CompilerAdditionalOptions>
   </PropertyGroup>
+  <PropertyGroup>
+    <!-- ICE61: MajorUpgrade AllowSameVersionUpgrades="yes" intentionally allows
+         re-running the same-version installer (to repair/refresh GHIDRA_HOME
+         etc.), so the generated Upgrade table range includes the current
+         version by design; this ICE is a known false positive in that case.
+         ICE69: both shortcuts intentionally target the C launcher's File (in
+         component CLauncherComponent) from a different, same-Feature
+         component, a supported MSI authoring pattern, not a real defect.
+         ICE91: this product is per-user only (InstallScope="perUser" plus the
+         ALLUSERS Condition above forbids per-machine installs), so files not
+         varying with ALLUSERS is expected and not a defect. -->
+    <SuppressIces>ICE61;ICE69;ICE91</SuppressIces>
+  </PropertyGroup>
   <ItemGroup>
     <Compile Include="Product.wxs" />
   </ItemGroup>
