@@ -144,9 +144,12 @@ if (Download-Verified 'Latest Ghidra' $asset.browser_download_url $ghidraChecksu
 
 if ($status -eq 0) {
     $lines = @(
-        ('<?define JavaVersion = "{0}" ?>' -f $javaVersion),
-        ('<?define JavaDownloadUrl = "{0}" ?>' -f (Escape-XmlAttribute $jdkUrl)),
-        ('<?define GhidraDownloadUrl = "{0}" ?>' -f (Escape-XmlAttribute $asset.browser_download_url))
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<Include xmlns="http://schemas.microsoft.com/wix/2006/wi">',
+        ('  <?define JavaVersion = "{0}" ?>' -f $javaVersion),
+        ('  <?define JavaDownloadUrl = "{0}" ?>' -f (Escape-XmlAttribute $jdkUrl)),
+        ('  <?define GhidraDownloadUrl = "{0}" ?>' -f (Escape-XmlAttribute $asset.browser_download_url)),
+        '</Include>'
     )
     [System.IO.File]::WriteAllText($versionsFile, ($lines -join [Environment]::NewLine) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 }

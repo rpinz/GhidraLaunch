@@ -132,9 +132,12 @@ fi
 
 if [[ "${status}" -eq 0 ]]; then
   {
-    printf '<?define JavaVersion = "%s" ?>\n' "${java_version}"
-    printf '<?define JavaDownloadUrl = "%s" ?>\n' "$(xml_escape "${jdk_url}")"
-    printf '<?define GhidraDownloadUrl = "%s" ?>\n' "$(xml_escape "${ghidra_url}")"
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+    printf '<Include xmlns="http://schemas.microsoft.com/wix/2006/wi">\n'
+    printf '  <?define JavaVersion = "%s" ?>\n' "${java_version}"
+    printf '  <?define JavaDownloadUrl = "%s" ?>\n' "$(xml_escape "${jdk_url}")"
+    printf '  <?define GhidraDownloadUrl = "%s" ?>\n' "$(xml_escape "${ghidra_url}")"
+    printf '</Include>\n'
   } > "${versions_file}"
 fi
 
