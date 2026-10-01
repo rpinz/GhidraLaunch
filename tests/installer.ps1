@@ -58,6 +58,7 @@ if ($environmentRows[0].Column2 -ne '[INSTALLFOLDER]Ghidra') {
 $bundle = [xml](Get-Content -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'GhidraLaunchSetup/Bundle.wxs') -Raw)
 $namespace = [System.Xml.XmlNamespaceManager]::new($bundle.NameTable)
 $namespace.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
+$namespace.AddNamespace('util', 'http://schemas.microsoft.com/wix/UtilExtension')
 $msiPackages = @($bundle.SelectNodes('//w:Chain/w:MsiPackage', $namespace))
 $msiNames = @($msiPackages | ForEach-Object { $_.GetAttribute('SourceFile') })
 if ($msiNames.Count -ne 2 -or
@@ -85,7 +86,7 @@ if (-not $ghidraPackage.GetAttribute('InstallCommand') -or -not $ghidraPackage.G
 if ($ghidraPackage.GetAttribute('DetectCondition') -ne 'GhidraPayloadInstalled') {
     throw 'Ghidra ExePackage does not detect the extracted payload'
 }
-$fileSearch = @($bundle.SelectNodes('//w:FileSearch', $namespace) |
+$fileSearch = @($bundle.SelectNodes('//util:FileSearch', $namespace) |
     Where-Object { $_.GetAttribute('Variable') -eq 'GhidraPayloadInstalled' })
 if ($fileSearch.Count -ne 1 -or
     $fileSearch[0].GetAttribute('Result') -ne 'exists' -or
