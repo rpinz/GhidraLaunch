@@ -134,20 +134,20 @@ only after eligibility has been confirmed, MFA and role assignments are
 complete, repository review protections are in place, and the policy above
 contains the actual team members.
 
-Before the project has any public release, a manually dispatched workflow may
-publish one initial release without Authenticode by explicitly setting
-`allow_unsigned_initial_release`. The workflow refuses this exception once a
-public release exists. Tag-triggered releases require SignPath to be enabled.
+Authenticode signing is optional. Until SignPath is enabled, both tag-triggered
+and manually dispatched releases can be published without Authenticode; the
+published assets and SBOMs are still keyless-signed with Sigstore. Enabling
+SignPath adds Authenticode signatures but is not required to publish releases.
 
 ## Releasing
 
 Pushing a tag matching `vMAJOR.MINOR.PATCH` or
 `vMAJOR.MINOR.PATCH.REVISION` (optionally with a suffix), or running the
-*Build and publish signed setup bundle release* workflow manually from the
+*Build and publish setup bundle release* workflow manually from the
 default branch with an existing `tag` input, builds that exact tag on a Windows
 runner. It re-downloads and verifies Ghidra and Temurin with `download.ps1`,
-signs the first-party executables in SignPath when enabled, then builds and
-signs the MSI and setup EXE in order. It runs the CI checks
+signs the first-party executables in SignPath when enabled, then builds the MSI
+and setup EXE and signs them in SignPath when enabled. It runs the CI checks
 (`tests/launchers.ps1`, `tests/ghidra-helper.ps1`, `tests/installer.ps1`) and
 generates SPDX 2.3 and CycloneDX JSON
 SBOMs: they include hashes for the two published artifacts, the two launchers,
