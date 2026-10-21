@@ -33,7 +33,9 @@ function Read-Rows($sql, $columns) {
 
 $productProperties = @{}
 foreach ($row in @(Read-Rows 'SELECT `Property`, `Value` FROM `Property`' 2)) {
-    $productProperties[$row.Column1] = $row.Column2
+    if (-not [string]::IsNullOrEmpty($row.Column1)) {
+        $productProperties[$row.Column1] = $row.Column2
+    }
 }
 if ($productProperties['ProductName'] -ne 'Ghidra Launch') {
     throw "MSI ProductName must be 'Ghidra Launch' (found '$($productProperties['ProductName'])')"
