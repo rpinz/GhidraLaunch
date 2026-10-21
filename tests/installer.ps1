@@ -8,11 +8,11 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 $resolvedMsiPath = (Resolve-Path -LiteralPath $MsiPath).Path
 $database = $installer.OpenDatabase($resolvedMsiPath, 0)
 $summary = $installer.SummaryInformation($resolvedMsiPath, 0)
-if ($summary.Property(2) -ne 'Ghidra Launch') {
-    throw "MSI SummaryInformation Subject must be 'Ghidra Launch' (found '$($summary.Property(2))')"
+if ($summary.Property(3) -ne 'Ghidra Launch') {
+    throw "MSI SummaryInformation Subject must be 'Ghidra Launch' (found '$($summary.Property(3))')"
 }
-if ($summary.Property(3) -ne 'rpinz') {
-    throw "MSI SummaryInformation Author must be 'rpinz' (found '$($summary.Property(3))')"
+if ($summary.Property(4) -ne 'rpinz') {
+    throw "MSI SummaryInformation Author must be 'rpinz' (found '$($summary.Property(4))')"
 }
 
 function Read-Rows($sql, $columns) {
