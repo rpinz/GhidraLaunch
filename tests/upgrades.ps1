@@ -37,7 +37,8 @@ function Assert-Installed([string]$Variant, [string]$Version) {
     $marker = Get-Content -LiteralPath "$install/Ghidra/.ghidralaunch-source.sha256" -Raw
     $owner = (Get-ItemProperty 'HKCU:\Software\rpinz\Ghidra Launch').PayloadOwner
     if (-not $owner -or $marker -notmatch "owner=$([regex]::Escape($owner))`n") {
-        throw 'Wrong payload owner after upgrade'
+        $markerOwner = [regex]::Match($marker, '(?m)^owner=(.+)$').Groups[1].Value
+        throw "Wrong payload owner after upgrade: registry='$owner', marker='$markerOwner'"
     }
     if ([Environment]::GetEnvironmentVariable('GHIDRA_HOME', 'User') -ne "$install\Ghidra") {
         throw 'Upgrade lost GHIDRA_HOME'
