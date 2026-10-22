@@ -15,7 +15,7 @@ if ($summary.Property(3) -ne 'Ghidra Launch' -or $summary.Property(4) -ne 'rpinz
 
 function Read-Rows($sql, $columns) {
     $view = $database.OpenView($sql)
-    $view.Execute()
+    $null = $view.Execute()
     try {
         while ($record = $view.Fetch()) {
             $row = @{}
@@ -23,7 +23,7 @@ function Read-Rows($sql, $columns) {
             [pscustomobject]$row
         }
     } finally {
-        $view.Close()
+        $null = $view.Close()
     }
 }
 
