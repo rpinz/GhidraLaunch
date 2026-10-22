@@ -1,7 +1,9 @@
 <?if $(var.Variant) = C ?>
   <?define AppGuid = "{8C6EFB53-61EB-484D-9BC8-A20BB455CA88}" ?>
+  <?define PayloadOwnerGuid = "{C2A77A0C-B930-47AA-8D2E-D36A2532298F}" ?>
 <?else?>
   <?define AppGuid = "{82BBD580-462D-47C4-AAB1-0C0E0DECB45B}" ?>
+  <?define PayloadOwnerGuid = "{D48672D9-631E-42E7-A943-61E411AB5C87}" ?>
 <?endif?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Ghidra Launch" Manufacturer="rpinz" Version="$(var.ReleaseVersion)"
@@ -55,10 +57,12 @@
         <RemoveFolder Id="RemoveINSTALLFOLDER" On="uninstall" />
         <RegistryValue Name="Ghidra" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
                        Type="integer" Value="1" KeyPath="yes" />
-        <RegistryValue Name="PayloadOwner" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
-                       Type="string" Value="[GHIDRALAUNCHOWNER]" />
         <Environment Id="GhidraHomeEnv" Name="GHIDRA_HOME" Value="[INSTALLFOLDER]Ghidra"
                      Permanent="no" Part="all" Action="set" System="no" />
+      </Component>
+      <Component Id="PayloadOwnerComponent" Guid="$(var.PayloadOwnerGuid)">
+        <RegistryValue Name="PayloadOwner" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
+                       Type="string" Value="[GHIDRALAUNCHOWNER]" KeyPath="yes" />
       </Component>
       <Component Id="LauncherBinary" Guid="$(var.AppGuid)">
         <File Id="LauncherFile" Name="$(var.LauncherName)" Source="$(var.LauncherPath)" Checksum="yes" />

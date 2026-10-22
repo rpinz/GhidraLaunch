@@ -7,6 +7,7 @@
     <InstallerPlatform>x86</InstallerPlatform>
     <OutputPath>bin\$(Configuration)\</OutputPath>
     <IntermediateOutputPath>obj\$(Stage)$(Variant)\$(Configuration)\</IntermediateOutputPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**\*.wxl</DefaultItemExcludes>
     <ReleaseVersion Condition="'$(ReleaseVersion)' == ''">0.0.0</ReleaseVersion>
     <SourceRoot>$(MSBuildThisFileDirectory)..\</SourceRoot>
     <PayloadRoot Condition="'$(PayloadRoot)' == ''">$(SourceRoot)</PayloadRoot>
