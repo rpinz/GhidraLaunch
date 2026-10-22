@@ -382,7 +382,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $prerelease = if ($env:RELEASE_TAG -match '-') { '--prerelease' } else { $null }
+          $prerelease = $env:RELEASE_TAG -match '-'
           $notes = if ($env:SIGNPATH_ENABLED -eq 'true') {
             'Windows artifacts have Authenticode signatures provided by SignPath Foundation. SBOMs and published assets also have keyless Sigstore signatures. Code signing policy: https://github.com/rpinz/GhidraLaunch#code-signing-policy'
           } else {
@@ -401,29 +401,36 @@ jobs:
           foreach ($asset in $assets) {
             if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Missing release asset: $asset" }
           }
-          $releaseArgs = @(
-            'release', 'create', $env:RELEASE_TAG,
-            '--verify-tag',
-            '--draft',
-            '--title', $env:RELEASE_TAG,
-            '--notes', $notes,
-            '--generate-notes'
-          )
-          if ($prerelease) { $releaseArgs += $prerelease }
-          & gh @releaseArgs
+          & gh api "repos/{owner}/{repo}/git/ref/tags/$env:RELEASE_TAG" | Out-Null
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & gh release upload $env:RELEASE_TAG @assets
+          $created = & gh api --method POST 'repos/{owner}/{repo}/releases' -f "tag_name=$env:RELEASE_TAG" -f "name=$env:RELEASE_TAG" -f "body=$notes" -F draft=true -F "prerelease=$($prerelease.ToString().ToLowerInvariant())" -F generate_release_notes=true
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $release = $created | ConvertFrom-Json
+          if (-not $release.id -or -not $release.draft) { throw 'Release creation did not return a draft release ID' }
+          $releasePath = "repos/{owner}/{repo}/releases/$($release.id)"
+          $uploadUrl = $release.upload_url -replace '\{.*$', ''
+          foreach ($asset in $assets) {
+            $name = [Uri]::EscapeDataString((Split-Path $asset -Leaf))
+            & gh api --method POST "$($uploadUrl)?name=$name" --header 'Content-Type: application/octet-stream' --input $asset | Out-Null
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $uploadedJson = & gh api "$releasePath/assets"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $uploaded = @($uploadedJson | ConvertFrom-Json)
+          if ($uploaded.Count -ne $assets.Count) { throw "Expected $($assets.Count) uploaded assets; found $($uploaded.Count)" }
           $download = Join-Path $env:RUNNER_TEMP 'release-asset-validation'
           New-Item -ItemType Directory -Path $download -Force | Out-Null
-          & gh release download $env:RELEASE_TAG --dir $download
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $uploaded = @(Get-ChildItem -LiteralPath $download -File)
-          if ($uploaded.Count -ne $assets.Count) { throw "Expected $($assets.Count) uploaded assets; found $($uploaded.Count)" }
           foreach ($asset in $assets) {
+            $name = Split-Path $asset -Leaf
+            $remote = @($uploaded | Where-Object { $_.name -ceq $name })
+            if ($remote.Count -ne 1) { throw "Expected exactly one uploaded asset named $name" }
+            $destination = Join-Path $download $name
+            $headers = @{ Accept = 'application/octet-stream' }
+            $headers.Authorization = 'Bearer ' + $env:GH_TOKEN
+            Invoke-WebRequest -Uri "https://api.github.com/repos/$env:GH_REPO/releases/assets/$($remote[0].id)" -Headers $headers -OutFile $destination
             $localHash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash
-            $remoteHash = (Get-FileHash -LiteralPath (Join-Path $download (Split-Path $asset -Leaf)) -Algorithm SHA256).Hash
+            $remoteHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
             if ($localHash -ne $remoteHash) { throw "Uploaded asset differs from verified local file: $asset" }
           }
-          & gh release edit $env:RELEASE_TAG --draft=false
+          & gh api --method PATCH $releasePath -F draft=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
