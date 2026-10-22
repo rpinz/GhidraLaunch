@@ -3,6 +3,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
 
+// Frozen pre-native helper for isolated v3-to-v5 upgrade tests only.
 namespace GhidraLaunchGhidraHelper
 {
     // Extracts the Ghidra release zip (as downloaded and verified by download.sh/download.ps1,

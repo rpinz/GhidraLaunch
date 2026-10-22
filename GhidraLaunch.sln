@@ -7,19 +7,23 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GhidraLaunchC", "GhidraLaun
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GhidraLaunchRS", "GhidraLaunchRS\GhidraLaunchRS.vcxproj", "{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GhidraLaunchGhidraHelper", "GhidraLaunchGhidraHelper\GhidraLaunchGhidraHelper.csproj", "{C71768D8-E9C4-475A-A084-4A774FD65D15}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GhidraLaunchGhidraHelperC", "GhidraLaunchGhidraHelperC\GhidraLaunchGhidraHelperC.vcxproj", "{B7EF270F-72D7-4802-BA1C-B4EC9B310E51}"
 EndProject
-Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchInstaller", "GhidraLaunchInstaller\GhidraLaunchInstaller.wixproj", "{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}"
-	ProjectSection(ProjectDependencies) = postProject
-		{671351BD-21DE-45FC-813C-9644A41FE38F} = {671351BD-21DE-45FC-813C-9644A41FE38F}
-		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA} = {8C9574AD-B813-4823-A1A5-5D01EAA45DEA}
-	EndProjectSection
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GhidraLaunchGhidraHelperRS", "GhidraLaunchGhidraHelperRS\GhidraLaunchGhidraHelperRS.vcxproj", "{B62B45B6-22D9-47E3-8EA2-41F5B4271BF9}"
 EndProject
-Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchSetup", "GhidraLaunchSetup\GhidraLaunchSetup.wixproj", "{54D4ADC7-1FFC-4207-9152-50FE58F28D7F}"
-	ProjectSection(ProjectDependencies) = postProject
-		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE} = {FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}
-		{C71768D8-E9C4-475A-A084-4A774FD65D15} = {C71768D8-E9C4-475A-A084-4A774FD65D15}
-	EndProjectSection
+Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchInstallerC", "GhidraLaunchInstaller\GhidraLaunchInstallerC.wixproj", "{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}"
+EndProject
+Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchInstallerRust", "GhidraLaunchInstaller\GhidraLaunchInstallerRust.wixproj", "{B055B470-DF9D-4F40-BA26-65BFF802B195}"
+EndProject
+Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchSetupC", "GhidraLaunchSetup\GhidraLaunchSetupC.wixproj", "{54D4ADC7-1FFC-4207-9152-50FE58F28D7F}"
+EndProject
+Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchSetupRust", "GhidraLaunchSetup\GhidraLaunchSetupRust.wixproj", "{865D9D64-B764-441F-B6C3-3C14F98D0261}"
+EndProject
+Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchCoreC", "GhidraLaunchSetup\GhidraLaunchCoreC.wixproj", "{75AFBE15-B852-4DD7-8814-0C024D61B7CE}"
+EndProject
+Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchCoreRust", "GhidraLaunchSetup\GhidraLaunchCoreRust.wixproj", "{3A30E807-8740-4B46-9D4C-4AD687EEC78D}"
+EndProject
+Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "GhidraLaunchJava", "GhidraLaunchSetup\GhidraLaunchJava.wixproj", "{908EC908-6E6C-420A-8362-588C4DB4A557}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -35,16 +39,35 @@ Global
 		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}.Debug|x64.Build.0 = Debug|x64
 		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}.Release|x64.ActiveCfg = Release|x64
 		{8C9574AD-B813-4823-A1A5-5D01EAA45DEA}.Release|x64.Build.0 = Release|x64
-		{C71768D8-E9C4-475A-A084-4A774FD65D15}.Debug|x64.ActiveCfg = Debug|x64
-		{C71768D8-E9C4-475A-A084-4A774FD65D15}.Debug|x64.Build.0 = Debug|x64
-		{C71768D8-E9C4-475A-A084-4A774FD65D15}.Release|x64.ActiveCfg = Release|x64
-		{C71768D8-E9C4-475A-A084-4A774FD65D15}.Release|x64.Build.0 = Release|x64
+		{B7EF270F-72D7-4802-BA1C-B4EC9B310E51}.Debug|x64.ActiveCfg = Debug|x64
+		{B7EF270F-72D7-4802-BA1C-B4EC9B310E51}.Debug|x64.Build.0 = Debug|x64
+		{B7EF270F-72D7-4802-BA1C-B4EC9B310E51}.Release|x64.ActiveCfg = Release|x64
+		{B7EF270F-72D7-4802-BA1C-B4EC9B310E51}.Release|x64.Build.0 = Release|x64
+		{B62B45B6-22D9-47E3-8EA2-41F5B4271BF9}.Debug|x64.ActiveCfg = Debug|x64
+		{B62B45B6-22D9-47E3-8EA2-41F5B4271BF9}.Debug|x64.Build.0 = Debug|x64
+		{B62B45B6-22D9-47E3-8EA2-41F5B4271BF9}.Release|x64.ActiveCfg = Release|x64
+		{B62B45B6-22D9-47E3-8EA2-41F5B4271BF9}.Release|x64.Build.0 = Release|x64
 		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}.Debug|x64.ActiveCfg = Debug|x86
 		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}.Release|x64.ActiveCfg = Release|x86
 		{FE0D8529-9AAC-4B4C-9F78-521D6EEA02EE}.Release|x64.Build.0 = Release|x86
+		{B055B470-DF9D-4F40-BA26-65BFF802B195}.Debug|x64.ActiveCfg = Debug|x86
+		{B055B470-DF9D-4F40-BA26-65BFF802B195}.Release|x64.ActiveCfg = Release|x86
+		{B055B470-DF9D-4F40-BA26-65BFF802B195}.Release|x64.Build.0 = Release|x86
 		{54D4ADC7-1FFC-4207-9152-50FE58F28D7F}.Debug|x64.ActiveCfg = Debug|x86
 		{54D4ADC7-1FFC-4207-9152-50FE58F28D7F}.Release|x64.ActiveCfg = Release|x86
 		{54D4ADC7-1FFC-4207-9152-50FE58F28D7F}.Release|x64.Build.0 = Release|x86
+		{865D9D64-B764-441F-B6C3-3C14F98D0261}.Debug|x64.ActiveCfg = Debug|x86
+		{865D9D64-B764-441F-B6C3-3C14F98D0261}.Release|x64.ActiveCfg = Release|x86
+		{865D9D64-B764-441F-B6C3-3C14F98D0261}.Release|x64.Build.0 = Release|x86
+		{75AFBE15-B852-4DD7-8814-0C024D61B7CE}.Debug|x64.ActiveCfg = Debug|x86
+		{75AFBE15-B852-4DD7-8814-0C024D61B7CE}.Release|x64.ActiveCfg = Release|x86
+		{75AFBE15-B852-4DD7-8814-0C024D61B7CE}.Release|x64.Build.0 = Release|x86
+		{3A30E807-8740-4B46-9D4C-4AD687EEC78D}.Debug|x64.ActiveCfg = Debug|x86
+		{3A30E807-8740-4B46-9D4C-4AD687EEC78D}.Release|x64.ActiveCfg = Release|x86
+		{3A30E807-8740-4B46-9D4C-4AD687EEC78D}.Release|x64.Build.0 = Release|x86
+		{908EC908-6E6C-420A-8362-588C4DB4A557}.Debug|x64.ActiveCfg = Debug|x86
+		{908EC908-6E6C-420A-8362-588C4DB4A557}.Release|x64.ActiveCfg = Release|x86
+		{908EC908-6E6C-420A-8362-588C4DB4A557}.Release|x64.Build.0 = Release|x86
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

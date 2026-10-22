@@ -4,7 +4,12 @@
     <parameter name="version" required="true" />
   </parameters>
   <zip-file>
-    <pe-file path="GhidraLaunchSetup.exe"
+    <pe-file path="GhidraLaunchSetupC.exe"
+             product-name="Ghidra Launch"
+             product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="GhidraLaunchSetupRust.exe"
              product-name="Ghidra Launch"
              product-version="${version}">
       <authenticode-sign />

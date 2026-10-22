@@ -4,12 +4,23 @@
     <parameter name="version" required="true" />
   </parameters>
   <zip-file>
-    <msi-file path="GhidraLaunchInstaller.msi"
+    <msi-file path="GhidraLaunchInstallerC.msi"
               subject="Ghidra Launch"
               author="rpinz">
       <pe-file-set product-name="Ghidra Launch"
                    product-version="${version}">
         <include path="GhidraLaunchC.exe" />
+        <for-each>
+          <authenticode-verify />
+        </for-each>
+      </pe-file-set>
+      <authenticode-sign />
+    </msi-file>
+    <msi-file path="GhidraLaunchInstallerRust.msi"
+              subject="Ghidra Launch"
+              author="rpinz">
+      <pe-file-set product-name="Ghidra Launch"
+                   product-version="${version}">
         <include path="GhidraLaunchRS.exe" />
         <for-each>
           <authenticode-verify />

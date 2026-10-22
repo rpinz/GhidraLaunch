@@ -1,94 +1,32 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- START OF DEFINITIONS -->
-<!-- The path to Resources files -->
-<?define ResourcePath = "..\Resources" ?>
-<!-- The name of the application -->
-<?define Name = "Ghidra Launch" ?>
-<!-- The Description of the application -->
-<?define Description = "Launch Ghidra software reverse engineering (SRE) framework by this pretty icon." ?>
-<!-- The manufacturer, for setup of package publisher and folder info -->
-<?define Manufacturer = "rpinz" ?>
-<!-- The version number of this setup package -->
-<?ifndef ReleaseVersion ?>
-<?define ReleaseVersion = "0.0.0" ?>
-<?endif ?>
-<!-- The copyright -->
-<?define Copyright = "The Unlicense" ?>
-<!-- The help url -->
-<?define HelpUrl = "https://htmlpreview.github.io/?https://github.com/NationalSecurityAgency/ghidra/blob/stable/GhidraDocs/InstallationGuide.html" ?>
-<!-- The about url -->
-<?define AboutUrl = "https://github.com/rpinz/GhidraLaunch" ?>
-<!-- UpgradeCode must be unique and not changed once the first version of the program is installed. -->
-<?define UpgradeCode = "{DFE05126-B29E-4298-A06B-63F833BC0BF8}" ?>
-<!-- The Icon -->
-<?define Icon = "$(var.ResourcePath)\Ghidra.ico" ?>
-<!-- The Logo -->
-<?define Logo = "$(var.ResourcePath)\Logo.png" ?>
-<!-- The LogoSide -->
-<?define LogoSide = "$(var.ResourcePath)\LogoSide.png" ?>
-<!-- The Splash Screen image -->
-<?define SplashScreen = "$(var.ResourcePath)\Splash.bmp" ?>
-<!-- END OF DEFINITIONS -->
-<?include Versions.wxi ?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
-     xmlns:bal="http://schemas.microsoft.com/wix/BalExtension"
-     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
-  <?define Java_TargetDir=".."?>
-  <?define GhidraZip_TargetDir=".."?>
-  <?define GhidraLaunchInstaller_TargetDir=$(var.GhidraLaunchInstaller.TargetDir)?>
-  <?define GhidraLaunchGhidraHelper_TargetPath=$(var.GhidraLaunchGhidraHelper.TargetPath)?>
-  <Bundle Name="$(var.Name)" 
-          Manufacturer="$(var.Manufacturer)"
-          Version="$(var.ReleaseVersion)"
-          AboutUrl="$(var.AboutUrl)"
-          HelpUrl="$(var.HelpUrl)"
-          Copyright="$(var.Copyright)"
-          IconSourceFile="$(var.Icon)"
-          SplashScreenSourceFile="$(var.SplashScreen)"
-          UpgradeCode="$(var.UpgradeCode)"
-          Condition="VersionNT >= v6.3 AND VersionNT64 >= v6.3">
-  <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkSidebarLicense">
-      <bal:WixStandardBootstrapperApplication
-        LicenseUrl="https://unlicense.org/"
-        LogoFile="$(var.Logo)"
-        LogoSideFile="$(var.LogoSide)"
-        ShowVersion="no"
-        SuppressOptionsUI="no"
-        SuppressRepair="yes" />
-  </BootstrapperApplicationRef>
-  <Chain>
-      <!-- Java: fetched at install time rather than embedded, to keep the bundle small -->
-      <MsiPackage DisplayName="Eclipse Temurin OpenJDK $(var.JavaVersion)"
-                  SourceFile="$(var.Java_TargetDir)\OpenJDK$(var.JavaVersion)U-jdk_x64.msi"
-                  Compressed="no"
-                  DownloadUrl="$(var.JavaDownloadUrl)"
-                  Vital="yes" />
-      <!-- Ghidra: extracted at install time by GhidraLaunchGhidraHelper from Ghidra.zip,
-           itself fetched at install time rather than embedded, into
-           %LocalAppData%\Ghidra Launch\Ghidra (per-user, no elevation). -->
-      <ExePackage DisplayName="Ghidra"
-                  SourceFile="$(var.GhidraLaunchGhidraHelper_TargetPath)"
-                  Compressed="yes"
-                  PerMachine="no"
-                  Vital="yes"
-                  InstallCommand='extract "Ghidra.zip" "[LocalAppDataFolder]$(var.Name)\Ghidra"'
-                  UninstallCommand='remove "[LocalAppDataFolder]$(var.Name)\Ghidra" "Ghidra.zip"'
-                  DetectCondition="GhidraPayloadInstalled">
-        <Payload Id="GhidraZipPayload"
-                 Name="Ghidra.zip"
-                 SourceFile="$(var.GhidraZip_TargetDir)\Ghidra.zip"
-                 Compressed="no"
-                 DownloadUrl="$(var.GhidraDownloadUrl)" />
-      </ExePackage>
-      <!-- GhidraLaunchInstaller.msi -->
-      <MsiPackage DisplayName="$(var.Name)"
-                  SourceFile="$(var.GhidraLaunchInstaller_TargetDir)\GhidraLaunchInstaller.msi"
-                  Compressed="yes"
-                  Vital="yes" />
+<?include $(var.VersionsFile) ?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="Ghidra Launch" Manufacturer="rpinz" Version="$(var.ReleaseVersion)"
+          Tag="$(var.Variant)"
+          AboutUrl="https://github.com/rpinz/GhidraLaunch"
+          Copyright="The Unlicense"
+          IconSourceFile="..\Resources\Ghidra.ico"
+          UpgradeCode="{933B00E3-642F-4745-946E-15FC9F064B43}"
+          Condition="VersionNT &gt;= v6.3 AND VersionNT64 &gt;= v6.3">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkSidebarLicense"
+          LicenseUrl="https://unlicense.org/" LogoFile="..\Resources\Logo.png"
+          LogoSideFile="..\Resources\LogoSide.png" SuppressRepair="yes" />
+    </BootstrapperApplication>
+    <Chain>
+      <BundlePackage Id="Core$(var.Variant)" SourceFile="$(var.CorePath)" Compressed="yes" Vital="yes">
+        <Payload Name="Ghidra.zip" SourceFile="$(var.PayloadRoot)\Ghidra.zip"
+                 Compressed="no" DownloadUrl="$(var.GhidraDownloadUrl)" />
+      </BundlePackage>
+      <!-- Legacy bundle removal finishes inside Core before Java is detected.
+           A Java failure must not roll back and delete the committed Ghidra tree. -->
+      <RollbackBoundary Id="PayloadCommitted" />
+      <BundlePackage Id="Java" SourceFile="$(var.JavaPath)" Name="GhidraLaunchJava.exe"
+                     Compressed="yes" Permanent="yes" Vital="yes">
+        <Payload Name="OpenJDK$(var.JavaVersion)U-jdk_x64.msi"
+                 SourceFile="$(var.PayloadRoot)\OpenJDK$(var.JavaVersion)U-jdk_x64.msi"
+                 Compressed="no" DownloadUrl="$(var.JavaDownloadUrl)" />
+      </BundlePackage>
     </Chain>
-    <util:FileSearch Id="GhidraPayloadMarker"
-                     Variable="GhidraPayloadInstalled"
-                     Path="[LocalAppDataFolder]$(var.Name)\Ghidra\.ghidralaunch-source.sha256"
-                     Result="exists" />
   </Bundle>
 </Wix>

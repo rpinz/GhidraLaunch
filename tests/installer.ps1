@@ -1,5 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$MsiPath,
+    [Parameter(Mandatory)][ValidateSet('C', 'Rust')][string]$Variant,
     [string]$ExpectedVersion
 )
 
@@ -8,125 +9,70 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 $resolvedMsiPath = (Resolve-Path -LiteralPath $MsiPath).Path
 $database = $installer.OpenDatabase($resolvedMsiPath, 0)
 $summary = $installer.SummaryInformation($resolvedMsiPath, 0)
-if ($summary.Property(3) -ne 'Ghidra Launch') {
-    throw "MSI SummaryInformation Subject must be 'Ghidra Launch' (found '$($summary.Property(3))')"
-}
-if ($summary.Property(4) -ne 'rpinz') {
-    throw "MSI SummaryInformation Author must be 'rpinz' (found '$($summary.Property(4))')"
+if ($summary.Property(3) -ne 'Ghidra Launch' -or $summary.Property(4) -ne 'rpinz') {
+    throw 'Unexpected MSI SummaryInformation Subject/Author'
 }
 
 function Read-Rows($sql, $columns) {
     $view = $database.OpenView($sql)
     $view.Execute()
-    $result = @()
     try {
         while ($record = $view.Fetch()) {
             $row = @{}
             for ($i = 1; $i -le $columns; $i++) { $row["Column$i"] = $record.StringData($i) }
-            $result += [pscustomobject]$row
+            [pscustomobject]$row
         }
     } finally {
         $view.Close()
     }
-    return $result
 }
 
-$productProperties = @{}
+$properties = @{}
 foreach ($row in @(Read-Rows 'SELECT `Property`, `Value` FROM `Property`' 2)) {
-    if (-not [string]::IsNullOrEmpty($row.Column1)) {
-        $productProperties[$row.Column1] = $row.Column2
-    }
+    $properties[$row.Column1] = $row.Column2
 }
-if ($productProperties['ProductName'] -ne 'Ghidra Launch') {
-    throw "MSI ProductName must be 'Ghidra Launch' (found '$($productProperties['ProductName'])')"
+if ($properties['ProductName'] -ne 'Ghidra Launch' -or $properties['GHIDRALAUNCHVARIANT'] -ne $Variant) {
+    throw 'Unexpected MSI product/variant'
 }
-if ($ExpectedVersion -and $productProperties['ProductVersion'] -ne $ExpectedVersion) {
-    throw "MSI ProductVersion '$($productProperties['ProductVersion'])' does not match '$ExpectedVersion'"
+if ($ExpectedVersion -and $properties['ProductVersion'] -ne $ExpectedVersion) {
+    throw "MSI ProductVersion '$($properties['ProductVersion'])' does not match '$ExpectedVersion'"
+}
+if ($properties['UpgradeCode'] -ne '{E0958D3F-13B8-4707-9E18-D7CBC2625E71}') {
+    throw 'MSI lost the legacy upgrade family'
 }
 
+$launcher = if ($Variant -eq 'C') { 'GhidraLaunchC.exe' } else { 'GhidraLaunchRS.exe' }
 $files = @(Read-Rows 'SELECT `File`.`FileName`, `Component`.`Directory_` FROM `File`, `Component` WHERE `File`.`Component_` = `Component`.`Component`' 2)
-$expected = @('GhidraLaunchC.exe', 'GhidraLaunchRS.exe')
-$locations = @{}
-foreach ($file in $files) {
-    $name = ($file.Column1 -split '\|')[-1]
-    if ($name -ieq 'ghidraRun.bat') { throw 'MSI unexpectedly contains Ghidra' }
-    if ($expected -contains $name) { $locations[$name] = $file.Column2 }
+if ($files.Count -ne 1 -or ($files[0].Column1 -split '\|')[-1] -ne $launcher -or $files[0].Column2 -ne 'INSTALLFOLDER') {
+    throw "MSI must install only $launcher in INSTALLFOLDER"
 }
-foreach ($name in $expected) {
-    if (-not $locations.ContainsKey($name)) { throw "MSI does not install $name" }
-    if ($locations[$name] -ne 'INSTALLFOLDER') {
-        throw "MSI installs $name outside INSTALLFOLDER"
-    }
+$shortcuts = @(Read-Rows 'SELECT `Target` FROM `Shortcut`' 1)
+if ($shortcuts.Count -ne 2 -or @($shortcuts | Where-Object { $_.Column1 -ne '[#LauncherFile]' }).Count) {
+    throw 'Both shortcuts must target the matching launcher'
 }
 
-$directoryRows = @(Read-Rows 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' 3 |
+$directories = @(Read-Rows 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' 3 |
     Where-Object { $_.Column1 -eq 'INSTALLFOLDER' })
-if ($directoryRows.Count -ne 1) {
-    throw "MSI does not contain exactly one INSTALLFOLDER directory row (found $($directoryRows.Count))"
-}
-$installDirectory = $directoryRows[0]
-if ($installDirectory.Column2 -ne 'LocalAppDataFolder' -or
-    ($installDirectory.Column3 -split '\|')[-1] -ne 'Ghidra Launch') {
+if ($directories.Count -ne 1 -or $directories[0].Column2 -ne 'LocalAppDataFolder' -or
+    ($directories[0].Column3 -split '\|')[-1] -ne 'Ghidra Launch') {
     throw 'MSI installation directory differs from the advertised per-user layout'
 }
-
-$environmentRows = @(Read-Rows 'SELECT `Environment`.`Name`, `Environment`.`Value` FROM `Environment`' 2 |
+$environment = @(Read-Rows 'SELECT `Environment`.`Name`, `Environment`.`Value` FROM `Environment`' 2 |
     Where-Object { $_.Column1 -match 'GHIDRA_HOME$' })
-if ($environmentRows.Count -ne 1) {
-    throw "MSI does not set exactly one GHIDRA_HOME environment row (found $($environmentRows.Count))"
+if ($environment.Count -ne 1 -or $environment[0].Column2 -ne '[INSTALLFOLDER]Ghidra') {
+    throw 'MSI must set GHIDRA_HOME to its managed Ghidra directory'
 }
-if ($environmentRows[0].Column2 -ne '[INSTALLFOLDER]Ghidra') {
-    throw "MSI sets GHIDRA_HOME to an unexpected value: $($environmentRows[0].Column2)"
+$owner = @(Read-Rows 'SELECT `Name`, `Value` FROM `Registry`' 2 |
+    Where-Object { $_.Column1 -eq 'PayloadOwner' })
+if ($owner.Count -ne 1 -or $owner[0].Column2 -ne '[GHIDRALAUNCHOWNER]') {
+    throw 'MSI must record the owning bundle provider key'
 }
-
-$bundle = [xml](Get-Content -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'GhidraLaunchSetup/Bundle.wxs') -Raw)
-$namespace = [System.Xml.XmlNamespaceManager]::new($bundle.NameTable)
-$namespace.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
-$namespace.AddNamespace('util', 'http://schemas.microsoft.com/wix/UtilExtension')
-$msiPackages = @($bundle.SelectNodes('//w:Chain/w:MsiPackage', $namespace))
-$msiNames = @($msiPackages | ForEach-Object { $_.GetAttribute('SourceFile') })
-if ($msiNames.Count -ne 2 -or
-    -not ($msiNames -match 'OpenJDK.*U-jdk_x64\.msi') -or
-    -not ($msiNames -match 'GhidraLaunchInstaller\.msi')) {
-    throw 'Bundle does not chain the Temurin and launcher MSIs'
+$sequence = @{}
+foreach ($row in @(Read-Rows 'SELECT `Action`, `Sequence` FROM `InstallExecuteSequence`' 2)) {
+    $sequence[$row.Column1] = [int]$row.Column2
 }
-
-$javaPackage = $msiPackages | Where-Object { $_.GetAttribute('SourceFile') -match 'OpenJDK.*U-jdk_x64\.msi' }
-if ($javaPackage.GetAttribute('Compressed') -ne 'no' -or -not $javaPackage.GetAttribute('DownloadUrl')) {
-    throw 'Bundle does not fetch Temurin at install time (expected Compressed="no" with a DownloadUrl)'
+if ($sequence['RemoveExistingProducts'] -le $sequence['InstallInitialize'] -or
+    $sequence['RemoveExistingProducts'] -ge $sequence['ProcessComponents']) {
+    throw 'Variant replacement must remove the old MSI inside the transaction before installing components'
 }
-
-$exePackages = @($bundle.SelectNodes('//w:Chain/w:ExePackage', $namespace))
-if ($exePackages.Count -ne 1) {
-    throw "Bundle does not chain exactly one ExePackage for Ghidra (found $($exePackages.Count))"
-}
-$ghidraPackage = $exePackages[0]
-if ($ghidraPackage.GetAttribute('PerMachine') -ne 'no') {
-    throw 'Ghidra ExePackage is not scoped per-user'
-}
-if (-not $ghidraPackage.GetAttribute('InstallCommand') -or -not $ghidraPackage.GetAttribute('UninstallCommand')) {
-    throw 'Ghidra ExePackage does not define install/uninstall commands'
-}
-if ($ghidraPackage.GetAttribute('DetectCondition') -ne 'GhidraPayloadInstalled') {
-    throw 'Ghidra ExePackage does not detect the extracted payload'
-}
-$fileSearch = @($bundle.SelectNodes('//util:FileSearch', $namespace) |
-    Where-Object { $_.GetAttribute('Variable') -eq 'GhidraPayloadInstalled' })
-if ($fileSearch.Count -ne 1 -or
-    $fileSearch[0].GetAttribute('Result') -ne 'exists' -or
-    $fileSearch[0].GetAttribute('Path') -notmatch '\.ghidralaunch-source\.sha256$') {
-    throw 'Bundle does not detect the Ghidra extraction marker'
-}
-if ($ghidraPackage.GetAttribute('UninstallCommand') -notmatch 'Ghidra\.zip') {
-    throw 'Ghidra uninstall is not source-aware for bundle upgrades'
-}
-$ghidraPayloads = @($ghidraPackage.SelectNodes('w:Payload', $namespace))
-$ghidraZipPayload = $ghidraPayloads | Where-Object { $_.GetAttribute('Name') -eq 'Ghidra.zip' }
-if (-not $ghidraZipPayload) {
-    throw 'Ghidra ExePackage does not reference a Ghidra.zip payload'
-}
-if ($ghidraZipPayload.GetAttribute('Compressed') -ne 'no' -or -not $ghidraZipPayload.GetAttribute('DownloadUrl')) {
-    throw 'Bundle does not fetch Ghidra.zip at install time (expected Compressed="no" with a DownloadUrl)'
-}
-
-Write-Host 'MSI installs both launchers and sets GHIDRA_HOME, not Ghidra itself; bundle downloads and extracts Ghidra and Temurin at install time.'
+Write-Host "$Variant MSI layout checks passed."

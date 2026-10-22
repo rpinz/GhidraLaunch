@@ -105,12 +105,12 @@ else
 fi
 
 if [[ "${ghidra_downloaded}" -eq 1 ]]; then
-  application_properties="$(unzip -Z1 Ghidra.zip | awk '/(^|\/)Ghidra\/application\.properties$/ { print; exit }')" || application_properties=""
+  application_properties="$(unzip -Z1 Ghidra.zip | awk '/(^|\/)Ghidra\/application\.properties$/ && !found { print; found=1 }')" || application_properties=""
   if [[ -z "${application_properties}" ]]; then
     echo "Ghidra Java requirement not found in release archive"
     status=1
   else
-    java_version="$(unzip -p Ghidra.zip "${application_properties}" | awk -F= '$1 == "application.java.min" { gsub(/[[:space:]]/, "", $2); print $2; exit }')" || java_version=""
+    java_version="$(unzip -p Ghidra.zip "${application_properties}" | awk -F= '$1 == "application.java.min" && !found { gsub(/[[:space:]]/, "", $2); print $2; found=1 }')" || java_version=""
     if [[ ! "${java_version}" =~ ^[0-9]+$ ]]; then
       echo "Ghidra Java requirement is missing or invalid"
       status=1
@@ -133,7 +133,7 @@ fi
 if [[ "${status}" -eq 0 ]]; then
   {
     printf '<?xml version="1.0" encoding="UTF-8"?>\n'
-    printf '<Include xmlns="http://schemas.microsoft.com/wix/2006/wi">\n'
+    printf '<Include xmlns="http://wixtoolset.org/schemas/v4/wxs">\n'
     printf '  <?define JavaVersion = "%s" ?>\n' "${java_version}"
     printf '  <?define JavaDownloadUrl = "%s" ?>\n' "$(xml_escape "${jdk_url}")"
     printf '  <?define GhidraDownloadUrl = "%s" ?>\n' "$(xml_escape "${ghidra_url}")"

@@ -14,15 +14,32 @@ from urllib.parse import unquote, urlparse
 
 
 FILES = {
-    "setup": ("GhidraLaunchSetup", "GhidraLaunchSetup/bin/Release/GhidraLaunchSetup.exe"),
-    "installer": ("GhidraLaunchInstaller", "GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi"),
+    "setup-c": ("GhidraLaunchSetupC", "GhidraLaunchSetup/bin/Release/GhidraLaunchSetupC.exe"),
+    "setup-rust": ("GhidraLaunchSetupRust", "GhidraLaunchSetup/bin/Release/GhidraLaunchSetupRust.exe"),
+    "installer-c": ("GhidraLaunchInstallerC", "GhidraLaunchInstaller/bin/Release/GhidraLaunchInstallerC.msi"),
+    "installer-rust": ("GhidraLaunchInstallerRust", "GhidraLaunchInstaller/bin/Release/GhidraLaunchInstallerRust.msi"),
     "c": ("GhidraLaunchC", "GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe"),
     "rust": ("GhidraLaunchRS", "GhidraLaunchRS/GhidraLaunchRS.exe"),
-    "helper": ("GhidraLaunchGhidraHelper", "GhidraLaunchGhidraHelper/bin/Release/net48/GhidraLaunchGhidraHelper.exe"),
+    "helper-c": ("GhidraLaunchGhidraHelperC", "GhidraLaunchGhidraHelperC/x64/Release/bin/GhidraLaunchGhidraHelperC.exe"),
+    "helper-rust": ("GhidraLaunchGhidraHelperRS", "GhidraLaunchGhidraHelperRS/bin/Release/GhidraLaunchGhidraHelperRS.exe"),
+    "core-c": ("GhidraLaunchCoreC", "GhidraLaunchSetup/bin/Release/GhidraLaunchCoreC.exe"),
+    "core-rust": ("GhidraLaunchCoreRust", "GhidraLaunchSetup/bin/Release/GhidraLaunchCoreRust.exe"),
+    "java": ("GhidraLaunchJava", "GhidraLaunchSetup/bin/Release/GhidraLaunchJava.exe"),
+}
+PUBLISHED = ("setup-c", "setup-rust", "installer-c", "installer-rust")
+RUST_PROJECTS = {
+    "rust": ("GhidraLaunchRS", "ghidra_launch"),
+    "helper-rust": ("GhidraLaunchGhidraHelperRS", "ghidra_launch_helper"),
 }
 LINKS = {
-    "setup": ("installer", "helper", "ghidra", "temurin"),
-    "installer": ("c", "rust"),
+    "setup-c": ("core-c", "java"),
+    "setup-rust": ("core-rust", "java"),
+    "core-c": ("installer-c", "helper-c", "ghidra"),
+    "core-rust": ("installer-rust", "helper-rust", "ghidra"),
+    "java": ("temurin",),
+    "installer-c": ("c",),
+    "installer-rust": ("rust",),
+    "helper-c": ("miniz",),
 }
 
 
@@ -92,6 +109,20 @@ def release_components(root, tag):
         "url": metadata["JavaDownloadUrl"],
         "description": "External installer downloaded by setup at install time; not embedded",
     }
+    provenance = root / "GhidraLaunchGhidraHelperC/vendor/miniz/provenance.json"
+    vendor = json.loads(provenance.read_text(encoding="utf-8"))
+    if vendor["name"] != "miniz" or urlparse(vendor["url"]).scheme != "https":
+        raise ValueError("Invalid miniz provenance")
+    for relative, expected in vendor["files"].items():
+        source = (provenance.parent / relative).resolve()
+        if not source.is_relative_to(provenance.parent.resolve()) or sha256(source) != expected:
+            raise ValueError(f"Vendored miniz file differs from provenance: {relative}")
+    files["miniz"] = {
+        "name": vendor["name"], "version": vendor["version"],
+        "path": provenance, "hash": sha256(provenance), "url": vendor["url"],
+        "license": vendor["license"],
+        "description": "Statically linked C ZIP library; manifest records individual source hashes",
+    }
     return files
 
 
@@ -106,13 +137,13 @@ def enrich_spdx(document, components):
             "versionInfo": component["version"],
             "downloadLocation": component.get("url", "NOASSERTION"),
             "filesAnalyzed": False,
-            "licenseConcluded": "NOASSERTION",
+            "licenseConcluded": component.get("license", "NOASSERTION"),
             "copyrightText": "NOASSERTION",
             "checksums": [{"algorithm": "SHA256", "checksumValue": component["hash"]}],
             "description": component["description"],
         }
         document["packages"].append(package)
-    for key in ("setup", "installer"):
+    for key in PUBLISHED:
         document["relationships"].append({
             "spdxElementId": "SPDXRef-DOCUMENT",
             "relatedSpdxElement": ids[key],
@@ -125,14 +156,15 @@ def enrich_spdx(document, components):
                 "relatedSpdxElement": ids[child],
                 "relationshipType": "DEPENDS_ON",
             })
-    rust = next((p for p in document["packages"] if p["name"] == "ghidra_launch"), None)
-    if rust is None:
-        raise ValueError("Syft did not inventory the Rust Cargo.lock")
-    document["relationships"].append({
-        "spdxElementId": ids["rust"],
-        "relatedSpdxElement": rust["SPDXID"],
-        "relationshipType": "DEPENDS_ON",
-    })
+    for key, (_, name) in RUST_PROJECTS.items():
+        rust = next((p for p in document["packages"] if p["name"] == name), None)
+        if rust is None:
+            raise ValueError(f"Syft did not inventory Rust package {name}")
+        document["relationships"].append({
+            "spdxElementId": ids[key],
+            "relatedSpdxElement": rust["SPDXID"],
+            "relationshipType": "DEPENDS_ON",
+        })
 
 
 def enrich_cyclonedx(document, components):
@@ -142,12 +174,14 @@ def enrich_cyclonedx(document, components):
     for key, component in components.items():
         item = {
             "bom-ref": refs[key],
-            "type": "file" if key in ("ghidra", "temurin") else "application",
+            "type": "library" if key == "miniz" else ("file" if key in ("ghidra", "temurin") else "application"),
             "name": component["name"],
             "version": component["version"],
             "description": component["description"],
             "hashes": [{"alg": "SHA-256", "content": component["hash"]}],
         }
+        if "license" in component:
+            item["licenses"] = [{"license": {"id": component["license"]}}]
         if "url" in component:
             item["externalReferences"] = [{"type": "distribution", "url": component["url"]}]
         document.setdefault("components", []).append(item)
@@ -155,35 +189,36 @@ def enrich_cyclonedx(document, components):
         "bom-ref": "ghidralaunch:release",
         "type": "application",
         "name": "GhidraLaunch",
-        "version": components["setup"]["version"],
+        "version": components["setup-c"]["version"],
     }
     document.setdefault("dependencies", []).append({
         "ref": "ghidralaunch:release",
-        "dependsOn": [refs["setup"], refs["installer"]],
+        "dependsOn": [refs[key] for key in PUBLISHED],
     })
-    rust = next((c for c in document["components"] if c["name"] == "ghidra_launch"), None)
-    if rust is None:
-        raise ValueError("Syft did not inventory the Rust Cargo.lock")
     for parent, children in LINKS.items():
         document.setdefault("dependencies", []).append({
             "ref": refs[parent],
             "dependsOn": [refs[child] for child in children],
         })
-    document["dependencies"].append({"ref": refs["rust"], "dependsOn": [rust["bom-ref"]]})
+    for key, (_, name) in RUST_PROJECTS.items():
+        rust = next((c for c in document["components"] if c["name"] == name), None)
+        if rust is None:
+            raise ValueError(f"Syft did not inventory Rust package {name}")
+        document["dependencies"].append({"ref": refs[key], "dependsOn": [rust["bom-ref"]]})
 
 
 def generate(root, output, tag, syft):
     components = release_components(root, tag)
-    lock = root / "GhidraLaunchRS/Cargo.lock"
-    if not lock.is_file():
-        raise FileNotFoundError(lock)
     with tempfile.TemporaryDirectory(prefix="release-sbom-") as staging:
         stage = Path(staging)
         for key in FILES:
             dest = stage / components[key]["path"].relative_to(root)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(components[key]["path"], dest)
-        (stage / "GhidraLaunchRS/Cargo.lock").write_bytes(lock.read_bytes())
+        for directory, _ in RUST_PROJECTS.values():
+            dest = stage / directory
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "Cargo.lock").write_bytes((root / directory / "Cargo.lock").read_bytes())
         spdx_path = stage / "spdx.json"
         cyclonedx_path = stage / "cyclonedx.json"
         subprocess.run([
@@ -201,7 +236,7 @@ def generate(root, output, tag, syft):
     for name, document in (("GhidraLaunch.spdx.json", spdx), ("GhidraLaunch.cyclonedx.json", cyclone)):
         (output / name).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     validate(output, components)
-    for key in ("setup", "installer"):
+    for key in PUBLISHED:
         dest = output / components[key]["path"].name
         shutil.copyfile(components[key]["path"], dest)
         if sha256(dest) != components[key]["hash"]:
@@ -227,6 +262,21 @@ def validate(output, components):
             or cdx_component["externalReferences"][0]["url"] != component["url"]
         ):
             raise ValueError(f"Missing external reference for {key}")
+    for parent, children in LINKS.items():
+        for child in children:
+            relationship = {
+                "spdxElementId": f"SPDXRef-GhidraLaunch-{parent}",
+                "relatedSpdxElement": f"SPDXRef-GhidraLaunch-{child}",
+                "relationshipType": "DEPENDS_ON",
+            }
+            if relationship not in spdx["relationships"]:
+                raise ValueError(f"Missing SPDX dependency {parent} -> {child}")
+        dependency = {
+            "ref": f"ghidralaunch:{parent}",
+            "dependsOn": [f"ghidralaunch:{child}" for child in children],
+        }
+        if dependency not in cyclone["dependencies"]:
+            raise ValueError(f"Incorrect CycloneDX dependency graph for {parent}")
     if not any(p["name"] == "windows-sys" for p in spdx["packages"]):
         raise ValueError("Rust dependencies missing from SPDX")
     if not any(c["name"] == "windows-sys" for c in cyclone["components"]):

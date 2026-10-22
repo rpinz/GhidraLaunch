@@ -1,4 +1,4 @@
-name: Build launchers
+name: Build launchers and installers
 
 on:
   push:
@@ -15,33 +15,53 @@ jobs:
         configuration: [Debug, Release]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Build C and Rust launchers
+      - name: Restore pinned WiX v5 tooling
+        shell: pwsh
+        run: dotnet tool restore
+      - name: Build and rebuild native executables
         shell: pwsh
         run: |
-          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
-          if (-not $msbuild) { throw 'MSBuild not found' }
-          $solutionDir = (Get-Location).Path + '\'
-          & $msbuild GhidraLaunchC/GhidraLaunchC.vcxproj /t:Build /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /p:SolutionDir=$solutionDir /m
+          ./scripts/build.ps1 -Configuration ${{ matrix.configuration }}
+          ./scripts/build.ps1 -Configuration ${{ matrix.configuration }} -Rebuild
+          cargo fmt --manifest-path GhidraLaunchGhidraHelperRS/Cargo.toml --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $msbuild GhidraLaunchRS/GhidraLaunchRS.vcxproj /t:Build /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /p:SolutionDir=$solutionDir
+          cargo test --manifest-path GhidraLaunchGhidraHelperRS/Cargo.toml --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $msbuild GhidraLaunchRS/GhidraLaunchRS.vcxproj /t:Rebuild /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /p:SolutionDir=$solutionDir
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $msbuild GhidraLaunchGhidraHelper/GhidraLaunchGhidraHelper.csproj /t:Build /p:Configuration=${{ matrix.configuration }} /restore
+          cargo clippy --manifest-path GhidraLaunchGhidraHelperRS/Cargo.toml --locked -- -D warnings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise both launchers
         shell: pwsh
         run: ./tests/launchers.ps1 -Configuration ${{ matrix.configuration }}
-      - name: Exercise the Ghidra extraction helper
+      - name: Exercise both native extraction helpers
         shell: pwsh
         run: ./tests/ghidra-helper.ps1 -Configuration ${{ matrix.configuration }}
-      - name: Build and inspect MSI layout
+      - name: Exercise native filesystem edge cases
+        shell: pwsh
+        run: |
+          $configuration = '${{ matrix.configuration }}'
+          $env:C_HELPER_EXE = (Resolve-Path "GhidraLaunchGhidraHelperC/x64/$configuration/bin/GhidraLaunchGhidraHelperC.exe").Path
+          $env:RUST_HELPER_EXE = (Resolve-Path "GhidraLaunchGhidraHelperRS/bin/$configuration/GhidraLaunchGhidraHelperRS.exe").Path
+          $env:C_HELPER_PEER_EXE = $env:RUST_HELPER_EXE
+          $env:RUST_HELPER_PEER_EXE = $env:C_HELPER_EXE
+          $env:C_HELPER_TEST_ROOT = Join-Path $env:RUNNER_TEMP 'c-helper-tests'
+          $env:RUST_HELPER_TEST_ROOT = Join-Path $env:RUNNER_TEMP 'rust-helper-tests'
+          New-Item -ItemType Directory -Path $env:C_HELPER_TEST_ROOT, $env:RUST_HELPER_TEST_ROOT -Force | Out-Null
+          python -m unittest discover -s tests -p 'test_*_helper.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build and inspect both installer pairs using synthetic upstream packages
         if: matrix.configuration == 'Release'
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
-          if (-not $msbuild) { throw 'MSBuild not found' }
-          & $msbuild GhidraLaunch.sln /t:GhidraLaunchInstaller /p:Configuration=Release /p:Platform=x64
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./tests/installer.ps1 -MsiPath GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi
+          $fixture = Join-Path $env:RUNNER_TEMP 'installer-fixture'
+          ./tests/create-fixture.ps1 -Destination $fixture
+          ./scripts/build.ps1 -Target Installer
+          ./scripts/build.ps1 -Target Internal -PayloadRoot $fixture -VersionsFile "$fixture/Versions.wxi"
+          ./scripts/build.ps1 -Target Setup -PayloadRoot $fixture -VersionsFile "$fixture/Versions.wxi"
+          foreach ($variant in @('C', 'Rust')) {
+            ./tests/installer.ps1 -MsiPath "GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller$variant.msi" -Variant $variant
+            ./tests/bundle.ps1 -BundlePath "GhidraLaunchSetup/bin/Release/GhidraLaunchSetup$variant.exe" -Variant $variant
+          }
+      - name: Exercise same-version and newer-version bundle switching
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: ./tests/upgrades.ps1 -PayloadRoot (Join-Path $env:RUNNER_TEMP 'installer-fixture')

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{B62B45B6-22D9-47E3-8EA2-41F5B4271BF9}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <NMakeBuildCommandLine>cargo build --locked &amp;&amp; if not exist bin\Debug mkdir bin\Debug &amp;&amp; copy /y target\debug\GhidraLaunchGhidraHelperRS.exe bin\Debug\GhidraLaunchGhidraHelperRS.exe</NMakeBuildCommandLine>
+    <NMakeOutput>bin\Debug\GhidraLaunchGhidraHelperRS.exe</NMakeOutput>
+    <NMakeCleanCommandLine>cargo clean &amp;&amp; if exist bin\Debug\GhidraLaunchGhidraHelperRS.exe del /q bin\Debug\GhidraLaunchGhidraHelperRS.exe</NMakeCleanCommandLine>
+    <NMakeReBuildCommandLine>cargo clean &amp;&amp; if exist bin\Debug\GhidraLaunchGhidraHelperRS.exe del /q bin\Debug\GhidraLaunchGhidraHelperRS.exe &amp;&amp; cargo build --locked &amp;&amp; if not exist bin\Debug mkdir bin\Debug &amp;&amp; copy /y target\debug\GhidraLaunchGhidraHelperRS.exe bin\Debug\GhidraLaunchGhidraHelperRS.exe</NMakeReBuildCommandLine>
+    <NMakePreprocessorDefinitions>_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <NMakeBuildCommandLine>cargo build --release --locked &amp;&amp; if not exist bin\Release mkdir bin\Release &amp;&amp; copy /y target\release\GhidraLaunchGhidraHelperRS.exe bin\Release\GhidraLaunchGhidraHelperRS.exe</NMakeBuildCommandLine>
+    <NMakeOutput>bin\Release\GhidraLaunchGhidraHelperRS.exe</NMakeOutput>
+    <NMakeCleanCommandLine>cargo clean &amp;&amp; if exist bin\Release\GhidraLaunchGhidraHelperRS.exe del /q bin\Release\GhidraLaunchGhidraHelperRS.exe</NMakeCleanCommandLine>
+    <NMakeReBuildCommandLine>cargo clean &amp;&amp; if exist bin\Release\GhidraLaunchGhidraHelperRS.exe del /q bin\Release\GhidraLaunchGhidraHelperRS.exe &amp;&amp; cargo build --release --locked &amp;&amp; if not exist bin\Release mkdir bin\Release &amp;&amp; copy /y target\release\GhidraLaunchGhidraHelperRS.exe bin\Release\GhidraLaunchGhidraHelperRS.exe</NMakeReBuildCommandLine>
+    <NMakePreprocessorDefinitions>NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="Cargo.toml" />
+    <None Include="Cargo.lock" />
+    <None Include="build.rs" />
+    <None Include="GhidraLaunchGhidraHelperRS.rc" />
+    <None Include=".cargo\config.toml" />
+    <None Include="src\main.rs" />
+    <None Include="Makefile" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

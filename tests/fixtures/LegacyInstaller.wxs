@@ -1,0 +1,31 @@
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Ghidra Launch" Manufacturer="rpinz"
+           Version="1.0.0" Language="1033" UpgradeCode="{E0958D3F-13B8-4707-9E18-D7CBC2625E71}">
+    <Package InstallerVersion="301" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited" />
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version is installed." />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLFOLDER" Name="Ghidra Launch">
+          <Component Id="LauncherComponent" Guid="{B3399059-6E9A-436F-8BE0-F0C0E2DA1ADB}">
+            <RegistryValue Name="Ghidra" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
+            <Environment Id="GhidraHomeEnv" Name="GHIDRA_HOME" Value="[INSTALLFOLDER]Ghidra" Permanent="no" Part="all" Action="set" System="no" />
+          </Component>
+          <Component Id="CLauncherComponent" Guid="{8C6EFB53-61EB-484D-9BC8-A20BB455CA88}">
+            <File Id="CLauncherComponent" Source="$(var.Root)\GhidraLaunchC\x64\Release\bin\GhidraLaunchC.exe" />
+            <RegistryValue Name="GhidraLaunchC.exe" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
+          </Component>
+          <Component Id="RSLauncherComponent" Guid="{82BBD580-462D-47C4-AAB1-0C0E0DECB45B}">
+            <File Id="RSLauncherComponent" Source="$(var.Root)\GhidraLaunchRS\GhidraLaunchRS.exe" />
+            <RegistryValue Name="GhidraLaunchRS.exe" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+    <Feature Id="ProductFeature" Level="1">
+      <ComponentRef Id="LauncherComponent" />
+      <ComponentRef Id="CLauncherComponent" />
+      <ComponentRef Id="RSLauncherComponent" />
+    </Feature>
+  </Product>
+</Wix>

@@ -47,6 +47,7 @@ jobs:
           SIGNPATH_LAUNCHERS_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_LAUNCHERS_ARTIFACT_CONFIGURATION_SLUG }}
           SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }}
           SIGNPATH_SETUP_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_SETUP_ARTIFACT_CONFIGURATION_SLUG }}
+          SIGNPATH_INTERNAL_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_INTERNAL_ARTIFACT_CONFIGURATION_SLUG }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:EVENT_NAME -eq 'workflow_dispatch' -and $env:GITHUB_REF -ne "refs/heads/$env:DEFAULT_BRANCH") {
@@ -70,6 +71,9 @@ jobs:
             }
             if ($env:SIGNPATH_POLICY_READY -ne 'true') {
               throw 'Set SIGNPATH_POLICY_READY=true only after eligibility confirmation, MFA and signing roles are configured, and the Code signing policy is complete.'
+            }
+            if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_INTERNAL_ARTIFACT_CONFIGURATION_SLUG)) {
+              throw 'Missing SignPath internal bundle artifact configuration'
             }
           }
           $version = $tag.Substring(1) -replace '-.*$', ''
@@ -95,19 +99,20 @@ jobs:
         shell: pwsh
         run: ./download.ps1
 
-      - name: Build C and Rust launchers
+      - name: Restore pinned WiX v5 tooling
+        shell: pwsh
+        run: dotnet tool restore
+
+      - name: Build C and Rust launchers and native helpers
+        shell: pwsh
+        run: ./scripts/build.ps1 -Target Native -Configuration Release
+
+      - name: Verify installer upgrades using synthetic upstream packages
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
-          if (-not $msbuild) { throw 'MSBuild not found' }
-          $solutionDir = (Get-Location).Path + '\'
-          & $msbuild GhidraLaunchC/GhidraLaunchC.vcxproj /t:Build /p:Configuration=Release /p:Platform=x64 /p:SolutionDir=$solutionDir /m
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $msbuild GhidraLaunchRS/GhidraLaunchRS.vcxproj /t:Build /p:Configuration=Release /p:Platform=x64 /p:SolutionDir=$solutionDir
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $msbuild GhidraLaunchGhidraHelper/GhidraLaunchGhidraHelper.csproj /t:Build /p:Configuration=Release /p:Version=$env:RELEASE_VERSION /restore
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $fixture = Join-Path $env:RUNNER_TEMP 'release-upgrade-fixture'
+          ./tests/create-fixture.ps1 -Destination $fixture
+          ./tests/upgrades.ps1 -PayloadRoot $fixture
 
       - name: Verify first-party executable metadata
         shell: pwsh
@@ -116,7 +121,8 @@ jobs:
           $paths = @(
             'GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe',
             'GhidraLaunchRS/GhidraLaunchRS.exe',
-            'GhidraLaunchGhidraHelper/bin/Release/net48/GhidraLaunchGhidraHelper.exe'
+            'GhidraLaunchGhidraHelperC/x64/Release/bin/GhidraLaunchGhidraHelperC.exe',
+            'GhidraLaunchGhidraHelperRS/bin/Release/GhidraLaunchGhidraHelperRS.exe'
           )
           foreach ($path in $paths) {
             $version = (Get-Item -LiteralPath $path).VersionInfo
@@ -133,7 +139,8 @@ jobs:
           New-Item -ItemType Directory -Path $staging -Force | Out-Null
           Copy-Item GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe $staging
           Copy-Item GhidraLaunchRS/GhidraLaunchRS.exe $staging
-          Copy-Item GhidraLaunchGhidraHelper/bin/Release/net48/GhidraLaunchGhidraHelper.exe $staging
+          Copy-Item GhidraLaunchGhidraHelperC/x64/Release/bin/GhidraLaunchGhidraHelperC.exe $staging
+          Copy-Item GhidraLaunchGhidraHelperRS/bin/Release/GhidraLaunchGhidraHelperRS.exe $staging
 
       - name: Hand off first-party executables
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -169,7 +176,8 @@ jobs:
           $files = @(
             @{ Name = 'GhidraLaunchC.exe'; Path = 'GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe' },
             @{ Name = 'GhidraLaunchRS.exe'; Path = 'GhidraLaunchRS/GhidraLaunchRS.exe' },
-            @{ Name = 'GhidraLaunchGhidraHelper.exe'; Path = 'GhidraLaunchGhidraHelper/bin/Release/net48/GhidraLaunchGhidraHelper.exe' }
+            @{ Name = 'GhidraLaunchGhidraHelperC.exe'; Path = 'GhidraLaunchGhidraHelperC/x64/Release/bin/GhidraLaunchGhidraHelperC.exe' },
+            @{ Name = 'GhidraLaunchGhidraHelperRS.exe'; Path = 'GhidraLaunchGhidraHelperRS/bin/Release/GhidraLaunchGhidraHelperRS.exe' }
           )
           foreach ($file in $files) {
             $matches = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed-first-party') -Filter $file.Name -File -Recurse)
@@ -179,14 +187,9 @@ jobs:
             Copy-Item -LiteralPath $matches[0].FullName -Destination $file.Path -Force
           }
 
-      - name: Build launcher MSI
+      - name: Build launcher MSIs without rebuilding signed executables
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
-          if (-not $msbuild) { throw 'MSBuild not found' }
-          & $msbuild GhidraLaunch.sln /t:GhidraLaunchInstaller /p:Configuration=Release /p:Platform=x64 "/p:DefineConstants=ReleaseVersion=$env:RELEASE_VERSION"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: ./scripts/build.ps1 -Target Installer -ReleaseVersion $env:RELEASE_VERSION
 
       - name: Stage MSI for SignPath
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -195,7 +198,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $staging = Join-Path $env:RUNNER_TEMP 'signpath-msi'
           New-Item -ItemType Directory -Path $staging -Force | Out-Null
-          Copy-Item GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi $staging
+          Copy-Item GhidraLaunchInstaller/bin/Release/GhidraLaunchInstallerC.msi, GhidraLaunchInstaller/bin/Release/GhidraLaunchInstallerRust.msi $staging
 
       - name: Hand off MSI
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -228,20 +231,67 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $matches = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed-msi') -Filter GhidraLaunchInstaller.msi -File -Recurse)
-          if ($matches.Count -ne 1) { throw "Expected one signed MSI; found $($matches.Count)" }
-          $signature = Get-AuthenticodeSignature -LiteralPath $matches[0].FullName
-          if ($signature.Status -ne 'Valid') { throw "Invalid MSI Authenticode signature: $($signature.StatusMessage)" }
-          Copy-Item -LiteralPath $matches[0].FullName -Destination GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi -Force
+          foreach ($variant in @('C', 'Rust')) {
+            $name = "GhidraLaunchInstaller$variant.msi"
+            $matches = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed-msi') -Filter $name -File -Recurse)
+            if ($matches.Count -ne 1) { throw "Expected one signed $name; found $($matches.Count)" }
+            $signature = Get-AuthenticodeSignature -LiteralPath $matches[0].FullName
+            if ($signature.Status -ne 'Valid') { throw "Invalid MSI Authenticode signature: $($signature.StatusMessage)" }
+            Copy-Item -LiteralPath $matches[0].FullName -Destination "GhidraLaunchInstaller/bin/Release/$name" -Force
+          }
 
-      - name: Build setup bundle
+      - name: Build internal native bundles without rebuilding signed inputs
+        shell: pwsh
+        run: ./scripts/build.ps1 -Target Internal -ReleaseVersion $env:RELEASE_VERSION
+
+      - name: Stage internal bundles for signing
+        if: vars.SIGNPATH_ENABLED == 'true'
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
-          if (-not $msbuild) { throw 'MSBuild not found' }
-          & $msbuild GhidraLaunch.sln /t:GhidraLaunchSetup /p:Configuration=Release /p:Platform=x64 "/p:DefineConstants=ReleaseVersion=$env:RELEASE_VERSION" "/p:Version=$env:RELEASE_VERSION"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $staging = Join-Path $env:RUNNER_TEMP 'signpath-internal'
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item GhidraLaunchSetup/bin/Release/GhidraLaunchCoreC.exe, GhidraLaunchSetup/bin/Release/GhidraLaunchCoreRust.exe, GhidraLaunchSetup/bin/Release/GhidraLaunchJava.exe $staging
+
+      - name: Hand off internal bundles
+        if: vars.SIGNPATH_ENABLED == 'true'
+        id: unsigned_internal
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signpath-internal
+          path: ${{ runner.temp }}/signpath-internal/
+          if-no-files-found: error
+
+      - name: Sign internal native bundles
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: SignPath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_INTERNAL_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned_internal.outputs.artifact-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: ${{ runner.temp }}/signed-internal
+          parameters: |
+            version: "${{ env.RELEASE_VERSION }}"
+
+      - name: Restore signed internal bundles
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          foreach ($name in @('GhidraLaunchCoreC.exe', 'GhidraLaunchCoreRust.exe', 'GhidraLaunchJava.exe')) {
+            $files = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'signed-internal') -Filter $name -File -Recurse)
+            if ($files.Count -ne 1) { throw "Expected one signed $name" }
+            if ((Get-AuthenticodeSignature $files[0].FullName).Status -ne 'Valid') { throw "Invalid signature for $name" }
+            Copy-Item $files[0].FullName "GhidraLaunchSetup/bin/Release/$name" -Force
+          }
+
+      - name: Build setup bundles without rebuilding signed inputs
+        shell: pwsh
+        run: ./scripts/build.ps1 -Target Setup -ReleaseVersion $env:RELEASE_VERSION
 
       - name: Stage setup bundle for SignPath
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -250,7 +300,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $staging = Join-Path $env:RUNNER_TEMP 'signpath-setup'
           New-Item -ItemType Directory -Path $staging -Force | Out-Null
-          Copy-Item GhidraLaunchSetup/bin/Release/GhidraLaunchSetup.exe $staging
+          Copy-Item GhidraLaunchSetup/bin/Release/GhidraLaunchSetupC.exe, GhidraLaunchSetup/bin/Release/GhidraLaunchSetupRust.exe $staging
 
       - name: Hand off setup bundle
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -283,23 +333,30 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $matches = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed-setup') -Filter GhidraLaunchSetup.exe -File -Recurse)
-          if ($matches.Count -ne 1) { throw "Expected one signed setup bundle; found $($matches.Count)" }
-          $signature = Get-AuthenticodeSignature -LiteralPath $matches[0].FullName
-          if ($signature.Status -ne 'Valid') { throw "Invalid setup Authenticode signature: $($signature.StatusMessage)" }
-          Copy-Item -LiteralPath $matches[0].FullName -Destination GhidraLaunchSetup/bin/Release/GhidraLaunchSetup.exe -Force
+          foreach ($variant in @('C', 'Rust')) {
+            $name = "GhidraLaunchSetup$variant.exe"
+            $matches = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed-setup') -Filter $name -File -Recurse)
+            if ($matches.Count -ne 1) { throw "Expected one signed $name; found $($matches.Count)" }
+            $signature = Get-AuthenticodeSignature -LiteralPath $matches[0].FullName
+            if ($signature.Status -ne 'Valid') { throw "Invalid setup Authenticode signature: $($signature.StatusMessage)" }
+            Copy-Item -LiteralPath $matches[0].FullName -Destination "GhidraLaunchSetup/bin/Release/$name" -Force
+          }
 
       - name: Exercise both launchers
         shell: pwsh
         run: ./tests/launchers.ps1 -Configuration Release
 
-      - name: Exercise the Ghidra extraction helper
+      - name: Exercise both native Ghidra extraction helpers
         shell: pwsh
-        run: ./tests/ghidra-helper.ps1 -Configuration Release
+        run: ./tests/ghidra-helper.ps1 -Configuration Release -GhidraZipPath Ghidra.zip
 
-      - name: Inspect MSI layout
+      - name: Inspect both MSI layouts and bundle payloads
         shell: pwsh
-        run: ./tests/installer.ps1 -MsiPath GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller.msi -ExpectedVersion $env:RELEASE_VERSION
+        run: |
+          foreach ($variant in @('C', 'Rust')) {
+            ./tests/installer.ps1 -MsiPath "GhidraLaunchInstaller/bin/Release/GhidraLaunchInstaller$variant.msi" -Variant $variant -ExpectedVersion $env:RELEASE_VERSION
+            ./tests/bundle.ps1 -BundlePath "GhidraLaunchSetup/bin/Release/GhidraLaunchSetup$variant.exe" -Variant $variant
+          }
 
       - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
@@ -361,12 +418,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $identity = "https://github.com/$env:GITHUB_WORKFLOW_REF"
           $files = @(
-            'release-assets/GhidraLaunchSetup.exe',
-            'release-assets/GhidraLaunchInstaller.msi',
+            'release-assets/GhidraLaunchSetupC.exe',
+            'release-assets/GhidraLaunchSetupRust.exe',
+            'release-assets/GhidraLaunchInstallerC.msi',
+            'release-assets/GhidraLaunchInstallerRust.msi',
             'release-assets/GhidraLaunch.spdx.json',
             'release-assets/GhidraLaunch.cyclonedx.json'
           )
-          $names = @('GhidraLaunchSetup.exe', 'GhidraLaunchInstaller.msi', 'GhidraLaunch.spdx.json', 'GhidraLaunch.cyclonedx.json')
+          $names = @($files | ForEach-Object { Split-Path $_ -Leaf })
           for ($i = 0; $i -lt $files.Count; $i++) {
             $bundle = "release-assets/$($names[$i]).sigstore.json"
             & cosign sign-blob --yes --bundle $bundle $files[$i]
@@ -389,12 +448,16 @@ jobs:
             'Windows artifacts are not Authenticode-signed. SBOMs and published assets have keyless Sigstore signatures. Code signing policy: https://github.com/rpinz/GhidraLaunch#code-signing-policy'
           }
           $assets = @(
-            'release-assets/GhidraLaunchSetup.exe',
-            'release-assets/GhidraLaunchInstaller.msi',
+            'release-assets/GhidraLaunchSetupC.exe',
+            'release-assets/GhidraLaunchSetupRust.exe',
+            'release-assets/GhidraLaunchInstallerC.msi',
+            'release-assets/GhidraLaunchInstallerRust.msi',
             'release-assets/GhidraLaunch.spdx.json',
             'release-assets/GhidraLaunch.cyclonedx.json',
-            'release-assets/GhidraLaunchSetup.exe.sigstore.json',
-            'release-assets/GhidraLaunchInstaller.msi.sigstore.json',
+            'release-assets/GhidraLaunchSetupC.exe.sigstore.json',
+            'release-assets/GhidraLaunchSetupRust.exe.sigstore.json',
+            'release-assets/GhidraLaunchInstallerC.msi.sigstore.json',
+            'release-assets/GhidraLaunchInstallerRust.msi.sigstore.json',
             'release-assets/GhidraLaunch.spdx.json.sigstore.json',
             'release-assets/GhidraLaunch.cyclonedx.json.sigstore.json'
           )

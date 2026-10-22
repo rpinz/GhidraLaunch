@@ -1,0 +1,22 @@
+<Project>
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <OutputName>GhidraLaunchInstaller$(Variant)</OutputName>
+    <InstallerPlatform>x86</InstallerPlatform>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>obj\$(Variant)\$(Configuration)\</IntermediateOutputPath>
+    <ReleaseVersion Condition="'$(ReleaseVersion)' == ''">0.0.0</ReleaseVersion>
+    <SourceRoot>$(MSBuildThisFileDirectory)..\</SourceRoot>
+    <LauncherName Condition="'$(Variant)' == 'C'">GhidraLaunchC.exe</LauncherName>
+    <LauncherName Condition="'$(Variant)' == 'Rust'">GhidraLaunchRS.exe</LauncherName>
+    <LauncherPath Condition="'$(Variant)' == 'C'">$(SourceRoot)GhidraLaunchC\x64\$(Configuration)\bin\$(LauncherName)</LauncherPath>
+    <LauncherPath Condition="'$(Variant)' == 'Rust'">$(SourceRoot)GhidraLaunchRS\$(LauncherName)</LauncherPath>
+    <DefineConstants>$(DefineConstants);Variant=$(Variant);ReleaseVersion=$(ReleaseVersion);LauncherName=$(LauncherName);LauncherPath=$(LauncherPath)</DefineConstants>
+    <!-- Per-user layout and same-version replacement are intentional. -->
+    <SuppressIces>ICE61;ICE69;ICE91</SuppressIces>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\GhidraLaunchC\GhidraLaunchC.vcxproj" Condition="'$(Variant)' == 'C'" SetPlatform="Platform=x64" />
+    <ProjectReference Include="..\GhidraLaunchRS\GhidraLaunchRS.vcxproj" Condition="'$(Variant)' == 'Rust'" SetPlatform="Platform=x64" />
+  </ItemGroup>
+</Project>

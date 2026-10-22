@@ -49,7 +49,7 @@ function gh {
         return ConvertTo-Json -InputObject $global:uploaded -Compress
     }
     if ($arguments[2] -eq 'PATCH' -and $arguments[3] -eq 'repos/{owner}/{repo}/releases/42') {
-        if ($global:downloads -ne 8 -or $arguments -notcontains 'draft=false') {
+        if ($global:downloads -ne 12 -or $arguments -notcontains 'draft=false') {
             throw 'Published before validating all assets'
         }
         Write-Host 'PUBLISHED_CREATED_DRAFT'
@@ -70,7 +70,8 @@ function Invoke-WebRequest {
 }
 """
         names = (
-            "GhidraLaunchSetup.exe", "GhidraLaunchInstaller.msi",
+            "GhidraLaunchSetupC.exe", "GhidraLaunchSetupRust.exe",
+            "GhidraLaunchInstallerC.msi", "GhidraLaunchInstallerRust.msi",
             "GhidraLaunch.spdx.json", "GhidraLaunch.cyclonedx.json",
         )
         for mode, tag in (

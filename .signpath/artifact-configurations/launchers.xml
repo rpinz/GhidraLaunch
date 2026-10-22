@@ -14,7 +14,12 @@
              product-version="${version}">
       <authenticode-sign />
     </pe-file>
-    <pe-file path="GhidraLaunchGhidraHelper.exe"
+    <pe-file path="GhidraLaunchGhidraHelperC.exe"
+             product-name="Ghidra Launch"
+             product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="GhidraLaunchGhidraHelperRS.exe"
              product-name="Ghidra Launch"
              product-version="${version}">
       <authenticode-sign />

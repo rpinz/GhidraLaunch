@@ -145,7 +145,7 @@ if (Download-Verified 'Latest Ghidra' $asset.browser_download_url $ghidraChecksu
 if ($status -eq 0) {
     $lines = @(
         '<?xml version="1.0" encoding="UTF-8"?>',
-        '<Include xmlns="http://schemas.microsoft.com/wix/2006/wi">',
+        '<Include xmlns="http://wixtoolset.org/schemas/v4/wxs">',
         ('  <?define JavaVersion = "{0}" ?>' -f $javaVersion),
         ('  <?define JavaDownloadUrl = "{0}" ?>' -f (Escape-XmlAttribute $jdkUrl)),
         ('  <?define GhidraDownloadUrl = "{0}" ?>' -f (Escape-XmlAttribute $asset.browser_download_url)),
