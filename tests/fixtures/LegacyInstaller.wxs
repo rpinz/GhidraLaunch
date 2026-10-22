@@ -16,17 +16,12 @@
             <File Id="CLauncherComponent" Source="$(var.Root)\GhidraLaunchC\x64\Release\bin\GhidraLaunchC.exe" />
             <RegistryValue Name="GhidraLaunchC.exe" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
           </Component>
-          <Component Id="RSLauncherComponent" Guid="{82BBD580-462D-47C4-AAB1-0C0E0DECB45B}">
-            <File Id="RSLauncherComponent" Source="$(var.Root)\GhidraLaunchRS\GhidraLaunchRS.exe" />
-            <RegistryValue Name="GhidraLaunchRS.exe" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
-          </Component>
         </Directory>
       </Directory>
     </Directory>
     <Feature Id="ProductFeature" Level="1">
       <ComponentRef Id="LauncherComponent" />
       <ComponentRef Id="CLauncherComponent" />
-      <ComponentRef Id="RSLauncherComponent" />
     </Feature>
   </Product>
 </Wix>
