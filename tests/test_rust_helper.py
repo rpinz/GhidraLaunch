@@ -48,6 +48,9 @@ class RustHelperBuildCommandTests(unittest.TestCase):
                 for command in ("NMakeBuildCommandLine", "NMakeReBuildCommandLine"):
                     value = group.find(f"{namespace}{command}").text
                     self.assertIn(copy, value)
+                rebuild = group.find(f"{namespace}NMakeReBuildCommandLine").text
+                remove = f"if exist {output_dir}\\{executable} (del /q {output_dir}\\{executable}) &&"
+                self.assertIn(remove, rebuild)
 
 
 if EXE and ARTIFACTS:
