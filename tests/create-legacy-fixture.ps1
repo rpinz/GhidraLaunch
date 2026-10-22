@@ -28,10 +28,3 @@ foreach ($name in @('LegacyInstaller', 'LegacyBundle')) {
     & "$tools/light.exe" -nologo -sice:ICE61 -sice:ICE91 -ext "$tools/WixBalExtension.dll" -ext "$tools/WixUtilExtension.dll" "$Destination/$name.wixobj" -out "$Destination/$name.$extension"
     if ($LASTEXITCODE -ne 0) { throw "Legacy package linking failed: $name" }
 }
-foreach ($name in @('Ghidra.zip', 'OpenJDK21U-jdk_x64.msi')) {
-    $source = [IO.Path]::GetFullPath((Join-Path $PayloadRoot $name))
-    $target = [IO.Path]::GetFullPath((Join-Path $Destination $name))
-    if (-not [string]::Equals($source, $target, [StringComparison]::OrdinalIgnoreCase)) {
-        Copy-Item -LiteralPath $source -Destination $Destination
-    }
-}
