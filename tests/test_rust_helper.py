@@ -15,6 +15,7 @@ import sys
 import unittest
 import uuid
 import zipfile
+import xml.etree.ElementTree as ET
 
 
 EXE = os.environ.get("RUST_HELPER_EXE")
@@ -23,6 +24,31 @@ ARTIFACTS = os.environ.get("RUST_HELPER_TEST_ROOT")
 WINDOWS = sys.platform == "win32"
 WINE = os.environ.get("RUST_HELPER_WINE", "wine")
 MARKER = ".ghidralaunch-source.sha256"
+
+
+class RustHelperBuildCommandTests(unittest.TestCase):
+    def test_build_and_rebuild_copy_output_when_directory_exists(self):
+        project = Path(__file__).resolve().parents[1] / "GhidraLaunchGhidraHelperRS" / "GhidraLaunchGhidraHelperRS.vcxproj"
+        namespace = "{http://schemas.microsoft.com/developer/msbuild/2003}"
+        root = ET.parse(project).getroot()
+
+        for configuration in ("Debug", "Release"):
+            with self.subTest(configuration=configuration):
+                condition = f"'$(Configuration)|$(Platform)'=='{configuration}|x64'"
+                group = next(
+                    element for element in root.findall(f"{namespace}PropertyGroup")
+                    if element.get("Condition") == condition and
+                    element.find(f"{namespace}NMakeBuildCommandLine") is not None
+                )
+                output_dir = f"bin\\{configuration}"
+                target_dir = f"target\\{configuration.lower()}"
+                executable = "GhidraLaunchGhidraHelperRS.exe"
+                copy = f"if not exist {output_dir} (mkdir {output_dir}) && copy /y {target_dir}\\{executable} {output_dir}\\{executable}"
+
+                for command in ("NMakeBuildCommandLine", "NMakeReBuildCommandLine"):
+                    value = group.find(f"{namespace}{command}").text
+                    self.assertIn(copy, value)
+
 
 if EXE and ARTIFACTS:
     os.environ["C_HELPER_EXE"] = EXE
