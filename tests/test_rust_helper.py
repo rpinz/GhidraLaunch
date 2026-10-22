@@ -43,7 +43,7 @@ class RustHelperBuildCommandTests(unittest.TestCase):
                 output_dir = f"bin\\{configuration}"
                 target_dir = f"target\\{configuration.lower()}"
                 executable = "GhidraLaunchGhidraHelperRS.exe"
-                copy = f"if not exist {output_dir} (mkdir {output_dir}) && copy /y {target_dir}\\{executable} {output_dir}\\{executable}"
+                copy = f"(if exist {output_dir} (ver >nul) else (mkdir {output_dir})) && copy /y {target_dir}\\{executable} {output_dir}\\{executable}"
 
                 for command in ("NMakeBuildCommandLine", "NMakeReBuildCommandLine"):
                     value = group.find(f"{namespace}{command}").text

@@ -37,17 +37,17 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <NMakeBuildCommandLine>cargo build --locked &amp;&amp; if not exist bin\Debug (mkdir bin\Debug) &amp;&amp; copy /y target\debug\GhidraLaunchGhidraHelperRS.exe bin\Debug\GhidraLaunchGhidraHelperRS.exe</NMakeBuildCommandLine>
+    <NMakeBuildCommandLine>cargo build --locked &amp;&amp; (if exist bin\Debug (ver &gt;nul) else (mkdir bin\Debug)) &amp;&amp; copy /y target\debug\GhidraLaunchGhidraHelperRS.exe bin\Debug\GhidraLaunchGhidraHelperRS.exe</NMakeBuildCommandLine>
     <NMakeOutput>bin\Debug\GhidraLaunchGhidraHelperRS.exe</NMakeOutput>
     <NMakeCleanCommandLine>cargo clean &amp;&amp; if exist bin\Debug\GhidraLaunchGhidraHelperRS.exe del /q bin\Debug\GhidraLaunchGhidraHelperRS.exe</NMakeCleanCommandLine>
-    <NMakeReBuildCommandLine>cargo clean &amp;&amp; if exist bin\Debug\GhidraLaunchGhidraHelperRS.exe (del /q bin\Debug\GhidraLaunchGhidraHelperRS.exe) &amp;&amp; cargo build --locked &amp;&amp; if not exist bin\Debug (mkdir bin\Debug) &amp;&amp; copy /y target\debug\GhidraLaunchGhidraHelperRS.exe bin\Debug\GhidraLaunchGhidraHelperRS.exe</NMakeReBuildCommandLine>
+    <NMakeReBuildCommandLine>cargo clean &amp;&amp; if exist bin\Debug\GhidraLaunchGhidraHelperRS.exe (del /q bin\Debug\GhidraLaunchGhidraHelperRS.exe) &amp;&amp; cargo build --locked &amp;&amp; (if exist bin\Debug (ver &gt;nul) else (mkdir bin\Debug)) &amp;&amp; copy /y target\debug\GhidraLaunchGhidraHelperRS.exe bin\Debug\GhidraLaunchGhidraHelperRS.exe</NMakeReBuildCommandLine>
     <NMakePreprocessorDefinitions>_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <NMakeBuildCommandLine>cargo build --release --locked &amp;&amp; if not exist bin\Release (mkdir bin\Release) &amp;&amp; copy /y target\release\GhidraLaunchGhidraHelperRS.exe bin\Release\GhidraLaunchGhidraHelperRS.exe</NMakeBuildCommandLine>
+    <NMakeBuildCommandLine>cargo build --release --locked &amp;&amp; (if exist bin\Release (ver &gt;nul) else (mkdir bin\Release)) &amp;&amp; copy /y target\release\GhidraLaunchGhidraHelperRS.exe bin\Release\GhidraLaunchGhidraHelperRS.exe</NMakeBuildCommandLine>
     <NMakeOutput>bin\Release\GhidraLaunchGhidraHelperRS.exe</NMakeOutput>
     <NMakeCleanCommandLine>cargo clean &amp;&amp; if exist bin\Release\GhidraLaunchGhidraHelperRS.exe del /q bin\Release\GhidraLaunchGhidraHelperRS.exe</NMakeCleanCommandLine>
-    <NMakeReBuildCommandLine>cargo clean &amp;&amp; if exist bin\Release\GhidraLaunchGhidraHelperRS.exe (del /q bin\Release\GhidraLaunchGhidraHelperRS.exe) &amp;&amp; cargo build --release --locked &amp;&amp; if not exist bin\Release (mkdir bin\Release) &amp;&amp; copy /y target\release\GhidraLaunchGhidraHelperRS.exe bin\Release\GhidraLaunchGhidraHelperRS.exe</NMakeReBuildCommandLine>
+    <NMakeReBuildCommandLine>cargo clean &amp;&amp; if exist bin\Release\GhidraLaunchGhidraHelperRS.exe (del /q bin\Release\GhidraLaunchGhidraHelperRS.exe) &amp;&amp; cargo build --release --locked &amp;&amp; (if exist bin\Release (ver &gt;nul) else (mkdir bin\Release)) &amp;&amp; copy /y target\release\GhidraLaunchGhidraHelperRS.exe bin\Release\GhidraLaunchGhidraHelperRS.exe</NMakeReBuildCommandLine>
     <NMakePreprocessorDefinitions>NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
   </PropertyGroup>
   <ItemGroup>
