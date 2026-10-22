@@ -379,6 +379,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
           $prerelease = if ($env:RELEASE_TAG -match '-') { '--prerelease' } else { $null }
