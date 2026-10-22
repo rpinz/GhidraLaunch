@@ -55,10 +55,12 @@
         <RemoveFolder Id="RemoveINSTALLFOLDER" On="uninstall" />
         <RegistryValue Name="Ghidra" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
                        Type="integer" Value="1" KeyPath="yes" />
-        <RegistryValue Name="PayloadOwner" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
-                       Type="string" Value="[GHIDRALAUNCHOWNER]" />
         <Environment Id="GhidraHomeEnv" Name="GHIDRA_HOME" Value="[INSTALLFOLDER]Ghidra"
                      Permanent="no" Part="all" Action="set" System="no" />
+      </Component>
+      <Component Id="PayloadOwnerComponent" Guid="{C2A77A0C-B930-47AA-8D2E-D36A2532298F}">
+        <RegistryValue Name="PayloadOwner" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
+                       Type="string" Value="[GHIDRALAUNCHOWNER]" KeyPath="yes" />
       </Component>
       <Component Id="LauncherBinary" Guid="$(var.AppGuid)">
         <File Id="LauncherFile" Name="$(var.LauncherName)" Source="$(var.LauncherPath)" Checksum="yes" />

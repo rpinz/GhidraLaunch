@@ -62,10 +62,11 @@ $environment = @(Read-Rows 'SELECT `Environment`.`Name`, `Environment`.`Value` F
 if ($environment.Count -ne 1 -or $environment[0].Column2 -ne '[INSTALLFOLDER]Ghidra') {
     throw 'MSI must set GHIDRA_HOME to its managed Ghidra directory'
 }
-$owner = @(Read-Rows 'SELECT `Name`, `Value` FROM `Registry`' 2 |
+$owner = @(Read-Rows 'SELECT `Name`, `Value`, `Component_` FROM `Registry`' 3 |
     Where-Object { $_.Column1 -eq 'PayloadOwner' })
-if ($owner.Count -ne 1 -or $owner[0].Column2 -ne '[GHIDRALAUNCHOWNER]') {
-    throw 'MSI must record the owning bundle provider key'
+if ($owner.Count -ne 1 -or $owner[0].Column2 -ne '[GHIDRALAUNCHOWNER]' -or
+    $owner[0].Column3 -ne 'PayloadOwnerComponent') {
+    throw 'MSI must record the owning bundle provider key in its own component'
 }
 $sequence = @{}
 foreach ($row in @(Read-Rows 'SELECT `Action`, `Sequence` FROM `InstallExecuteSequence`' 2)) {
