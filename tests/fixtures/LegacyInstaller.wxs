@@ -8,6 +8,7 @@
       <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLFOLDER" Name="Ghidra Launch">
           <Component Id="LauncherComponent" Guid="{B3399059-6E9A-436F-8BE0-F0C0E2DA1ADB}">
+            <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
             <RegistryValue Name="Ghidra" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
             <Environment Id="GhidraHomeEnv" Name="GHIDRA_HOME" Value="[INSTALLFOLDER]Ghidra" Permanent="no" Part="all" Action="set" System="no" />
           </Component>
