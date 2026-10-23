@@ -106,5 +106,25 @@ class ReleaseSbomTests(unittest.TestCase):
             SBOM.release_components(self.root, "v1.2.3")
 
 
+class VendoredMinizTests(unittest.TestCase):
+    """Guard the checked out bytes, which release_components hashes at release
+    time. Upstream mixes line endings, so a clone that translates them silently
+    breaks provenance long after the change that would have to fix it."""
+
+    VENDOR = SCRIPT.parents[1] / "GhidraLaunchGhidraHelperC/vendor/miniz"
+
+    def setUp(self):
+        self.expected = json.loads((self.VENDOR / "provenance.json").read_text(encoding="utf-8"))["files"]
+
+    def test_working_tree_matches_recorded_upstream_hashes(self):
+        for relative, expected in self.expected.items():
+            with self.subTest(file=relative):
+                self.assertEqual(SBOM.sha256(self.VENDOR / relative), expected)
+
+    def test_checksum_file_matches_provenance(self):
+        listed = (self.VENDOR / "SHA256SUMS").read_text(encoding="utf-8").split()
+        self.assertEqual(dict(zip(listed[1::2], listed[0::2])), self.expected)
+
+
 if __name__ == "__main__":
     unittest.main()
