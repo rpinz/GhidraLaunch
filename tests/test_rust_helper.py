@@ -36,6 +36,7 @@ class RustHelperBuildCommandTests(unittest.TestCase):
         self.assertIn("embed_resource::compile_for(", build)
         self.assertIn('"GhidraLaunchGhidraHelperRS"', build)
         self.assertIn('ParamsIncludeDirs(&["../Resources"])', build)
+        self.assertIn('#include "winres.h"', resource)
         self.assertIn('#include "Version.h"', resource)
 
     @unittest.skipUnless(WINDOWS, "requires cmd.exe")
