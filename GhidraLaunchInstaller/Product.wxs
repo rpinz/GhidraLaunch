@@ -33,6 +33,38 @@
       <ComponentRef Id="ApplicationShortcut" />
       <ComponentRef Id="DesktopShortcutComponent" />
     </Feature>
+    <!-- Action text for the basic MSI progress UI. No Template attributes: the
+         steps are reported without the per-file ActionData detail lines. -->
+    <UI>
+      <ProgressText Action="LaunchConditions" Message="Checking installation requirements" />
+      <ProgressText Action="FindRelatedProducts" Message="Searching for an installed version" />
+      <ProgressText Action="MigrateFeatureStates" Message="Reading the installed configuration" />
+      <ProgressText Action="CostInitialize" Message="Computing space requirements" />
+      <ProgressText Action="FileCost" Message="Computing space requirements" />
+      <ProgressText Action="CostFinalize" Message="Computing space requirements" />
+      <ProgressText Action="InstallValidate" Message="Validating install" />
+      <ProgressText Action="GenerateScript" Message="Preparing the installation" />
+      <ProgressText Action="ProcessComponents" Message="Updating component registration" />
+      <ProgressText Action="RemoveExistingProducts" Message="Removing the previous version" />
+      <ProgressText Action="UnpublishFeatures" Message="Unpublishing product features" />
+      <ProgressText Action="UnpublishProduct" Message="Unpublishing product information" />
+      <ProgressText Action="RemoveShortcuts" Message="Removing shortcuts" />
+      <ProgressText Action="RemoveEnvironmentStrings" Message="Updating environment variables" />
+      <ProgressText Action="RemoveRegistryValues" Message="Removing registry values" />
+      <ProgressText Action="RemoveFiles" Message="Removing files" />
+      <ProgressText Action="RemoveFolders" Message="Removing folders" />
+      <ProgressText Action="CreateFolders" Message="Creating folders" />
+      <ProgressText Action="InstallFiles" Message="Copying new files" />
+      <ProgressText Action="CreateShortcuts" Message="Creating shortcuts" />
+      <ProgressText Action="WriteRegistryValues" Message="Writing registry values" />
+      <ProgressText Action="WriteEnvironmentStrings" Message="Updating environment variables" />
+      <ProgressText Action="RegisterUser" Message="Registering user" />
+      <ProgressText Action="RegisterProduct" Message="Registering product" />
+      <ProgressText Action="PublishFeatures" Message="Publishing product features" />
+      <ProgressText Action="PublishProduct" Message="Publishing product information" />
+      <ProgressText Action="Rollback" Message="Rolling back the installation" />
+      <ProgressText Action="RollbackCleanup" Message="Removing backup files" />
+    </UI>
   </Package>
   <Fragment>
     <StandardDirectory Id="DesktopFolder" />

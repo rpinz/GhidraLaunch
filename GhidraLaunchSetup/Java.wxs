@@ -10,7 +10,8 @@
           LicenseUrl="https://unlicense.org/" SuppressRepair="yes" />
     </BootstrapperApplication>
     <Chain>
-      <MsiPackage Id="Temurin" SourceFile="$(var.PayloadRoot)\OpenJDK$(var.JavaVersion)U-jdk_x64.msi"
+      <MsiPackage Id="Temurin" DisplayName="Java runtime (Eclipse Temurin)"
+                  SourceFile="$(var.PayloadRoot)\OpenJDK$(var.JavaVersion)U-jdk_x64.msi"
                   Compressed="no" DownloadUrl="$(var.JavaDownloadUrl)"
                   Permanent="yes" Visible="yes" Vital="yes" />
     </Chain>

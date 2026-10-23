@@ -14,14 +14,16 @@
           LogoSideFile="..\Resources\LogoSide.png" SuppressRepair="yes" />
     </BootstrapperApplication>
     <Chain>
-      <BundlePackage Id="Core$(var.Variant)" SourceFile="$(var.CorePath)" Compressed="yes" Vital="yes">
+      <BundlePackage Id="Core$(var.Variant)" DisplayName="Ghidra Launch and Ghidra files"
+                     SourceFile="$(var.CorePath)" Compressed="yes" Vital="yes">
         <Payload Name="Ghidra.zip" SourceFile="$(var.PayloadRoot)\Ghidra.zip"
                  Compressed="no" DownloadUrl="$(var.GhidraDownloadUrl)" />
       </BundlePackage>
       <!-- Legacy bundle removal finishes inside Core before Java is detected.
            A Java failure must not roll back and delete the committed Ghidra tree. -->
       <RollbackBoundary Id="PayloadCommitted" />
-      <BundlePackage Id="Java" SourceFile="$(var.JavaPath)" Name="GhidraLaunchJava.exe"
+      <BundlePackage Id="Java" DisplayName="Java runtime (Eclipse Temurin)"
+                     SourceFile="$(var.JavaPath)" Name="GhidraLaunchJava.exe"
                      Compressed="yes" Permanent="yes" Vital="yes">
         <Payload Name="OpenJDK$(var.JavaVersion)U-jdk_x64.msi"
                  SourceFile="$(var.PayloadRoot)\OpenJDK$(var.JavaVersion)U-jdk_x64.msi"

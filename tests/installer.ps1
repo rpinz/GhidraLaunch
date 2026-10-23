@@ -76,4 +76,27 @@ if ($sequence['RemoveExistingProducts'] -le $sequence['InstallInitialize'] -or
     $sequence['RemoveExistingProducts'] -ge $sequence['ProcessComponents']) {
     throw 'Variant replacement must remove the old MSI inside the transaction before installing components'
 }
+$actionText = @{}
+foreach ($row in @(Read-Rows 'SELECT `Action`, `Description`, `Template` FROM `ActionText`' 3)) {
+    if (-not $row.Column2) { throw "ActionText row '$($row.Column1)' has no description" }
+    if ($row.Column3) { throw "ActionText row '$($row.Column1)' must not report per-file detail" }
+    $actionText[$row.Column1] = $row.Column2
+}
+foreach ($action in @('InstallValidate', 'ProcessComponents', 'RemoveExistingProducts', 'InstallFiles',
+                      'CreateShortcuts', 'WriteRegistryValues', 'WriteEnvironmentStrings', 'RegisterProduct',
+                      'RemoveFiles', 'RemoveShortcuts', 'RemoveRegistryValues', 'RemoveEnvironmentStrings',
+                      'UnpublishFeatures')) {
+    if (-not $actionText.ContainsKey($action)) {
+        throw "MSI must report progress for $action"
+    }
+    if (-not $sequence.ContainsKey($action)) {
+        throw "MSI reports progress for unsequenced action $action"
+    }
+}
+# Rollback bookkeeping is never sequenced but still surfaces in the progress UI.
+foreach ($action in @('Rollback', 'RollbackCleanup')) {
+    if (-not $actionText.ContainsKey($action)) {
+        throw "MSI must report progress for $action"
+    }
+}
 Write-Host "$Variant MSI layout checks passed."

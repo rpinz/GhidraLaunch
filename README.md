@@ -38,6 +38,12 @@ error and retains Ghidra and the launcher; rerun setup to retry Java. The setup
 and its embedded stages are WiX native bootstrapper applications, not managed
 helpers or an external extraction dependency.
 
+While setup runs, its progress page names the step in progress — acquiring and
+installing "Ghidra Launch and Ghidra files", then "Java runtime (Eclipse
+Temurin)". Running an MSI directly reports its own steps ("Copying new files",
+"Creating shortcuts", "Removing the previous version", and so on) rather than
+listing individual files.
+
 Both launchers use `GHIDRA_HOME` when set; if it is unset or empty they
 instead look for `ghidraRun.bat` next to the launcher executable (this
 fallback does not apply to a fresh MSI installation, since the MSI only

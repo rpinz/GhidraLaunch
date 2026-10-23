@@ -18,13 +18,13 @@
           SuppressRepair="yes" />
     </BootstrapperApplication>
     <Chain>
-      <MsiPackage Id="Launcher$(var.Variant)" DisplayName="Ghidra Launch"
+      <MsiPackage Id="Launcher$(var.Variant)" DisplayName="Ghidra Launch launcher"
                   SourceFile="$(var.MsiPath)" Compressed="yes" Vital="yes">
         <MsiProperty Name="GHIDRALAUNCHOWNER" Value="[WixBundleProviderKey]" />
       </MsiPackage>
       <!-- Ownership is adopted even for unchanged archives. An outgoing bundle
            must not remove the incoming bundle's tree after its chain completes. -->
-      <ExePackage Id="Ghidra$(var.Variant)" DisplayName="Ghidra"
+      <ExePackage Id="Ghidra$(var.Variant)" DisplayName="Ghidra files"
                   SourceFile="$(var.HelperPath)" Compressed="yes" PerMachine="no" Vital="yes"
                   InstallArguments='extract "Ghidra.zip" "[LocalAppDataFolder]Ghidra Launch\Ghidra" "[WixBundleProviderKey]"'
                   UninstallArguments='remove "[LocalAppDataFolder]Ghidra Launch\Ghidra" "Ghidra.zip" "[WixBundleProviderKey]"'
