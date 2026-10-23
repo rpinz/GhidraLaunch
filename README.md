@@ -75,26 +75,42 @@ From a PowerShell prompt with the prerequisites installed:
 
 ```powershell
 dotnet tool restore
-./scripts/build.ps1 -Target Native -Configuration Release
+./scripts/build.ps1 -Target Native -Configuration Release -ReleaseVersion 1.2.3
 ./scripts/build.ps1 -Target Installer -ReleaseVersion 1.2.3
 ./scripts/build.ps1 -Target Internal -ReleaseVersion 1.2.3
 ./scripts/build.ps1 -Target Setup -ReleaseVersion 1.2.3
 ```
 
+The Native command stamps the shared version resource before compilation and
+checks all four executable versions. Use the same `ReleaseVersion` for every
+stage (default `0.0.0`; an optional fourth component sets the native file revision,
+while MSI/bundle product versions use the first three components).
 The packaging commands consume already-built inputs without rebuilding them,
-preserving signatures. Use the same version for both packaging commands.
+preserving signatures, and reject prerequisite artifacts with mismatched versions.
+WiX tracks build-time version and payload parameters as inputs, so changing them
+also invalidates incremental builds without rebuilding signed prerequisites.
 MSIs are written to `GhidraLaunchInstaller/bin/Release/` and setup EXEs to
 `GhidraLaunchSetup/bin/Release/`. The solution's Release build also includes
 both installer pairs; Debug builds the four native executables.
 
 CI checks both launchers and helpers in Debug/Release, shared extraction and
 ownership fixtures, both MSI layouts, built bundle payloads, and same-version/
-newer-version switching using synthetic upstream packages. The legacy migration
+newer-version switching using synthetic upstream packages. A separate test-only C
+executable exercises backup, install, rollback and cleanup failures; it is never
+packaged. Build it locally with `./scripts/build.ps1 -Target Faults`.
+Build/version, signing, SBOM and publication contract tests also run before
+release in ordinary CI. The legacy migration
 test downloads checksum-pinned WiX v3 tools and compiles a frozen managed helper
 fixture solely to exercise the old cached-uninstaller behavior; neither is part
 of production builds or distributed installers. CI does not download Ghidra or
 Temurin for these checks. Actual install/uninstall tests are restricted to
-isolated Windows CI profiles.
+isolated Windows CI profiles. The legacy fixture includes both launchers and
+both shortcuts and tests older and equal-version migration into each variant.
+Upgrade tests temporarily build versioned native inputs and restore the original
+executables and version header before release packaging/signing.
+On failure, Burn/MSI logs are retained in the runner's `upgrade-logs` directory
+and uploaded by both build and release workflows; failed fixtures are retained
+on the runner. Cleanup failures do not replace the original test error.
 
 The synthetic upstream MSI is machine-wide, like Temurin, and upgrade checks
 verify it survives bundle replacement. WiX warns that per-user bundles cannot

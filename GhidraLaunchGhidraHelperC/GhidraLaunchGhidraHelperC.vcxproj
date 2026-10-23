@@ -26,6 +26,10 @@
     <IntDir>$(ProjectDir)x64\$(Configuration)\obj\</IntDir>
     <TargetName>GhidraLaunchGhidraHelperC</TargetName>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(HelperFaultTests)' == 'true'">
+    <IntDir>$(ProjectDir)x64\$(Configuration)\obj\Faults\</IntDir>
+    <TargetName>GhidraLaunchGhidraHelperCFaults</TargetName>
+  </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
@@ -49,7 +53,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="main.c" />
+    <ClCompile Include="main.c" Condition="'$(HelperFaultTests)' != 'true'" />
+    <ClCompile Include="tests\faults.c" Condition="'$(HelperFaultTests)' == 'true'" />
     <ClCompile Include="vendor\miniz\miniz.c" />
     <ClCompile Include="vendor\miniz\miniz_zip.c" />
     <ClCompile Include="vendor\miniz\miniz_tinfl.c" />
