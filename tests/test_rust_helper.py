@@ -12,6 +12,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import unittest
 import uuid
 import zipfile
@@ -27,6 +28,34 @@ MARKER = ".ghidralaunch-source.sha256"
 
 
 class RustHelperBuildCommandTests(unittest.TestCase):
+    @unittest.skipUnless(WINDOWS, "requires cmd.exe")
+    def test_makefile_refreshes_existing_outputs_and_cleans_with_missing_debug(self):
+        makefile = Path(__file__).resolve().parents[1] / "GhidraLaunchGhidraHelperRS/Makefile"
+        commands = [line.strip() for line in makefile.read_text().splitlines() if line.startswith("\t")]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            name = "GhidraLaunchGhidraHelperRS.exe"
+            for configuration, command in zip(("Debug", "Release"), commands[:2]):
+                source = root / "target" / configuration.lower() / name
+                source.parent.mkdir(parents=True)
+                destination = root / "bin" / configuration / name
+                command = command.split(" && ", 1)[1]
+                for content in (b"first", b"changed"):
+                    source.write_bytes(content)
+                    result = subprocess.run(
+                        ["cmd", "/d", "/c", command], cwd=root,
+                        capture_output=True, timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(destination.read_bytes(), content)
+            (root / "bin/Debug" / name).unlink()
+            result = subprocess.run(
+                ["cmd", "/d", "/c", "ver >nul && " + commands[2].split(" && ", 1)[1]],
+                cwd=root, capture_output=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse((root / "bin/Release" / name).exists())
+
     def test_build_and_rebuild_copy_output_when_directory_exists(self):
         project = Path(__file__).resolve().parents[1] / "GhidraLaunchGhidraHelperRS" / "GhidraLaunchGhidraHelperRS.vcxproj"
         namespace = "{http://schemas.microsoft.com/developer/msbuild/2003}"
@@ -48,25 +77,24 @@ class RustHelperBuildCommandTests(unittest.TestCase):
                 for command in ("NMakeBuildCommandLine", "NMakeReBuildCommandLine"):
                     value = group.find(f"{namespace}{command}").text
                     self.assertIn(copy, value)
+                makefile = (project.parent / "Makefile").read_text()
+                self.assertIn(copy, makefile)
                 rebuild = group.find(f"{namespace}NMakeReBuildCommandLine").text
                 remove = f"if exist {output_dir}\\{executable} (del /q {output_dir}\\{executable}) &&"
                 self.assertIn(remove, rebuild)
 
 
 if EXE and ARTIFACTS:
-    os.environ["C_HELPER_EXE"] = EXE
-    os.environ["C_HELPER_TEST_ROOT"] = ARTIFACTS
-    os.environ["C_HELPER_WINE"] = WINE
-    if PEER_EXE:
-        os.environ["C_HELPER_PEER_EXE"] = PEER_EXE
-    else:
-        os.environ.pop("C_HELPER_PEER_EXE", None)
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import test_c_helper as shared_helper_contract_tests
 
 
     class RustHelperParityTests(shared_helper_contract_tests.CHelperTests):
-        pass
+        exe = EXE
+        fault_exe = None
+        peer_exe = PEER_EXE
+        artifacts = ARTIFACTS
+        wine = WINE
 
 
 def windows_path(value):

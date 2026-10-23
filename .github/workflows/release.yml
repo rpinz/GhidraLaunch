@@ -77,20 +77,13 @@ jobs:
             }
           }
           $version = $tag.Substring(1) -replace '-.*$', ''
-          $components = $version -split '\.'
-          if ($components | Where-Object { [int]$_ -gt 255 }) { throw 'Release version components must be <= 255 for Windows compatibility' }
-          $fileVersion = if ($components.Count -eq 3) { "$version.0" } else { $version }
-          $msiVersion = ($components | Select-Object -First 3) -join '.'
+          . ./scripts/build-version.ps1
+          $buildVersion = Get-BuildVersion $version
+          $msiVersion = $buildVersion.Product
           Write-Host "Releasing $tag"
           "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "RELEASE_VERSION=$msiVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          @"
-          #ifndef GHIDRA_LAUNCH_VERSION
-          #define GHIDRA_LAUNCH_VERSION "$fileVersion"
-          #define GHIDRA_LAUNCH_FILEVERSION $($fileVersion -replace '\.', ',')
-          #define GHIDRA_LAUNCH_PRODUCT_VERSION "$msiVersion"
-          #endif
-          "@ | Set-Content -Path Resources/Version.h -Encoding ascii
+          "RELEASE_NATIVE_VERSION=$($buildVersion.File)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # Downloads and checksum-verifies Ghidra.zip and the Temurin JDK MSI into the
       # repo root, and records their download URLs + the required Java version in
@@ -105,7 +98,7 @@ jobs:
 
       - name: Build C and Rust launchers and native helpers
         shell: pwsh
-        run: ./scripts/build.ps1 -Target Native -Configuration Release
+        run: ./scripts/build.ps1 -Target Native -Configuration Release -ReleaseVersion $env:RELEASE_NATIVE_VERSION
 
       - name: Verify installer upgrades using synthetic upstream packages
         shell: pwsh
@@ -113,6 +106,14 @@ jobs:
           $fixture = Join-Path $env:RUNNER_TEMP 'release-upgrade-fixture'
           ./tests/create-fixture.ps1 -Destination $fixture
           ./tests/upgrades.ps1 -PayloadRoot $fixture
+
+      - name: Retain installer failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-upgrade-logs
+          path: ${{ runner.temp }}/upgrade-logs/
+          if-no-files-found: warn
 
       - name: Verify first-party executable metadata
         shell: pwsh
@@ -189,7 +190,7 @@ jobs:
 
       - name: Build launcher MSIs without rebuilding signed executables
         shell: pwsh
-        run: ./scripts/build.ps1 -Target Installer -ReleaseVersion $env:RELEASE_VERSION
+        run: ./scripts/build.ps1 -Target Installer -ReleaseVersion $env:RELEASE_NATIVE_VERSION
 
       - name: Stage MSI for SignPath
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -242,7 +243,7 @@ jobs:
 
       - name: Build internal native bundles without rebuilding signed inputs
         shell: pwsh
-        run: ./scripts/build.ps1 -Target Internal -ReleaseVersion $env:RELEASE_VERSION
+        run: ./scripts/build.ps1 -Target Internal -ReleaseVersion $env:RELEASE_NATIVE_VERSION
 
       - name: Stage internal bundles for signing
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -291,7 +292,7 @@ jobs:
 
       - name: Build setup bundles without rebuilding signed inputs
         shell: pwsh
-        run: ./scripts/build.ps1 -Target Setup -ReleaseVersion $env:RELEASE_VERSION
+        run: ./scripts/build.ps1 -Target Setup -ReleaseVersion $env:RELEASE_NATIVE_VERSION
 
       - name: Stage setup bundle for SignPath
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -364,17 +365,7 @@ jobs:
 
       - name: Install Syft
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:RUNNER_TEMP 'syft_1.52.0_windows_amd64.zip'
-          Invoke-WebRequest -Uri 'https://github.com/anchore/syft/releases/download/v1.52.0/syft_1.52.0_windows_amd64.zip' -OutFile $archive
-          $expected = 'de787a374cf961c56fd7b206b2e183295abba32d0af3cb44d9aef2357ca9eda2'
-          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) { throw 'Syft archive checksum mismatch' }
-          $location = Join-Path $env:RUNNER_TEMP 'release-syft'
-          Expand-Archive -LiteralPath $archive -DestinationPath $location
-          $binary = Join-Path $location 'syft.exe'
-          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Syft executable not found in verified archive' }
-          "SYFT_CMD=$binary" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        run: ./scripts/install-syft.ps1
 
       - name: Generate and validate release SBOMs
         shell: pwsh

@@ -1,5 +1,6 @@
 param(
-    [Parameter(Mandatory)][string]$PayloadRoot
+    [Parameter(Mandatory)][string]$PayloadRoot,
+    [string]$LogRoot = (Join-Path $env:RUNNER_TEMP 'upgrade-logs')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,17 +12,49 @@ $install = Join-Path $env:LOCALAPPDATA 'Ghidra Launch'
 if (Test-Path -LiteralPath $install) { throw "Refusing to replace pre-existing installation: $install" }
 $scratch = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $scratch | Out-Null
+New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
+$LogRoot = (Resolve-Path -LiteralPath $LogRoot).Path
+$script:invocation = 0
+$originals = @(
+    'Resources/Version.h',
+    'GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe',
+    'GhidraLaunchRS/GhidraLaunchRS.exe',
+    'GhidraLaunchGhidraHelperC/x64/Release/bin/GhidraLaunchGhidraHelperC.exe',
+    'GhidraLaunchGhidraHelperRS/bin/Release/GhidraLaunchGhidraHelperRS.exe'
+)
+$backup = Join-Path $scratch 'native-inputs'
+New-Item -ItemType Directory -Path $backup | Out-Null
+foreach ($path in $originals) {
+    Copy-Item -LiteralPath (Join-Path $root $path) -Destination $backup
+}
 
 function Invoke-Bundle([string]$Path, [string]$Action, [bool]$Success = $true) {
-    $log = Join-Path $scratch ([IO.Path]::GetRandomFileName() + '.log')
+    $script:invocation++
+    $log = Join-Path $LogRoot ('{0:D3}-{1}-{2}.log' -f $script:invocation, [IO.Path]::GetFileNameWithoutExtension($Path), $Action.TrimStart('/'))
     $process = Start-Process -FilePath $Path -ArgumentList "$Action /quiet /norestart /log `"$log`"" -Wait -PassThru
     try {
         $ok = $process.ExitCode -in @(0, 3010)
         if ($ok -ne $Success) {
-            Get-Content -LiteralPath $log | Write-Host
+            if (Test-Path -LiteralPath $log) {
+                Get-Content -LiteralPath $log -ErrorAction Continue | Write-Host
+            } else {
+                Write-Warning "Bundle did not create its diagnostic log: $log"
+            }
             throw "Bundle $Action exited $($process.ExitCode): $Path"
         }
     } finally { $process.Dispose() }
+}
+
+function Assert-Shortcuts([string]$Launcher) {
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($link in @(
+        (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Ghidra Launch.lnk'),
+        (Join-Path ([Environment]::GetFolderPath('Programs')) 'Ghidra Launch/Ghidra Launch.lnk')
+    )) {
+        if (-not (Test-Path -LiteralPath $link) -or $shell.CreateShortcut($link).TargetPath -ne "$install\$Launcher") {
+            throw 'Missing or stale shortcut after upgrade'
+        }
+    }
 }
 
 function Assert-Installed([string]$Variant, [string]$Version) {
@@ -43,13 +76,7 @@ function Assert-Installed([string]$Variant, [string]$Version) {
     if ([Environment]::GetEnvironmentVariable('GHIDRA_HOME', 'User') -ne "$install\Ghidra") {
         throw 'Upgrade lost GHIDRA_HOME'
     }
-    $shell = New-Object -ComObject WScript.Shell
-    foreach ($link in @(
-        (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Ghidra Launch.lnk'),
-        (Join-Path ([Environment]::GetFolderPath('Programs')) 'Ghidra Launch/Ghidra Launch.lnk')
-    )) {
-        if ($shell.CreateShortcut($link).TargetPath -ne "$install\$launcher") { throw 'Stale shortcut after upgrade' }
-    }
+    Assert-Shortcuts $launcher
     $registered = @(Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall, HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall |
         Get-ItemProperty | Where-Object { $_.DisplayName -eq 'Ghidra Launch' -and $_.BundleCachePath -and -not $_.SystemComponent })
     if ($registered.Count -ne 1) { throw "Expected one registered bundle; found $($registered.Count)" }
@@ -59,8 +86,10 @@ function Assert-Installed([string]$Variant, [string]$Version) {
 }
 
 $last = $null
+$completed = $false
 try {
     foreach ($version in @('1.0.0', '1.0.1')) {
+        & "$root/scripts/build.ps1" -Target Native -ReleaseVersion $version
         & "$root/scripts/build.ps1" -Target Installer -ReleaseVersion $version
         & "$root/scripts/build.ps1" -Target Internal -ReleaseVersion $version -PayloadRoot $PayloadRoot -VersionsFile "$PayloadRoot/Versions.wxi"
         & "$root/scripts/build.ps1" -Target Setup -ReleaseVersion $version -PayloadRoot $PayloadRoot -VersionsFile "$PayloadRoot/Versions.wxi"
@@ -71,19 +100,31 @@ try {
             Copy-Item "$PayloadRoot/Ghidra.zip", "$PayloadRoot/OpenJDK21U-jdk_x64.msi" $dir
         }
     }
-    $legacy = Join-Path $scratch 'legacy'
-    & "$PSScriptRoot/create-legacy-fixture.ps1" -Destination $legacy -PayloadRoot $PayloadRoot
-    foreach ($variant in @('C', 'Rust')) {
-        Invoke-Bundle "$legacy/LegacyBundle.exe" '/install'
-        $last = "$legacy/LegacyBundle.exe"
-        $marker = Get-Content -LiteralPath "$install/Ghidra/.ghidralaunch-source.sha256" -Raw
-        if ($marker.Trim() -ine (Get-FileHash "$PayloadRoot/Ghidra.zip").Hash) { throw 'Legacy marker fixture differs from the original contract' }
-        $last = "$scratch/1.0.0-$variant/GhidraLaunchSetup$variant.exe"
-        Invoke-Bundle $last '/install'
-        Assert-Installed $variant '1.0.0'
-        Invoke-Bundle $last '/uninstall'
-        $last = $null
-        if (Test-Path -LiteralPath "$install/Ghidra") { throw 'Legacy migration uninstall left Ghidra behind' }
+    foreach ($legacyVersion in @('0.9.0', '1.0.0')) {
+        $legacy = Join-Path $scratch "legacy-$legacyVersion"
+        & "$root/scripts/build.ps1" -Target Native -ReleaseVersion $legacyVersion
+        & "$PSScriptRoot/create-legacy-fixture.ps1" -Destination $legacy -PayloadRoot $PayloadRoot -LegacyVersion $legacyVersion
+        foreach ($variant in @('C', 'Rust')) {
+            Write-Host "Migrating legacy $legacyVersion to 1.0.0 $variant"
+            $last = "$legacy/LegacyBundle.exe"
+            Invoke-Bundle $last '/install'
+            foreach ($launcher in @('GhidraLaunchC.exe', 'GhidraLaunchRS.exe')) {
+                if (-not (Test-Path -LiteralPath "$install/$launcher")) { throw "Legacy fixture is missing $launcher" }
+            }
+            Assert-Shortcuts 'GhidraLaunchC.exe'
+            $marker = Get-Content -LiteralPath "$install/Ghidra/.ghidralaunch-source.sha256" -Raw
+            if ($marker.Trim() -ine (Get-FileHash "$PayloadRoot/Ghidra.zip").Hash) { throw 'Legacy marker fixture differs from the original contract' }
+            Set-Content -LiteralPath "$install/Ghidra/support/user.txt" -Value 'preserved'
+            $last = "$scratch/1.0.0-$variant/GhidraLaunchSetup$variant.exe"
+            Invoke-Bundle $last '/install'
+            Assert-Installed $variant '1.0.0'
+            if ((Get-Content -LiteralPath "$install/Ghidra/support/user.txt" -Raw).Trim() -ne 'preserved') {
+                throw 'Legacy migration deleted user content'
+            }
+            Invoke-Bundle $last '/uninstall'
+            $last = $null
+            if (Test-Path -LiteralPath "$install/Ghidra") { throw 'Legacy migration uninstall left Ghidra behind' }
+        }
     }
     foreach ($step in @(@('1.0.0', 'C'), @('1.0.0', 'C'), @('1.0.0', 'Rust'), @('1.0.0', 'C'), @('1.0.1', 'Rust'), @('1.0.1', 'C'))) {
         $version, $variant = $step
@@ -100,6 +141,7 @@ try {
         }
     }
     $previousOwner = (Get-ItemProperty 'HKCU:\Software\rpinz\Ghidra Launch').PayloadOwner
+    & "$root/scripts/build.ps1" -Target Native -ReleaseVersion '1.0.1'
     & "$root/scripts/build.ps1" -Target Installer -ReleaseVersion '1.0.1' -Rebuild
     & "$root/scripts/build.ps1" -Target Internal -ReleaseVersion '1.0.1' -PayloadRoot $PayloadRoot -VersionsFile "$PayloadRoot/Versions.wxi" -Rebuild
     & "$root/scripts/build.ps1" -Target Setup -ReleaseVersion '1.0.1' -PayloadRoot $PayloadRoot -VersionsFile "$PayloadRoot/Versions.wxi" -Rebuild
@@ -115,6 +157,7 @@ try {
     }
     $failedMsi = Join-Path $scratch 'failed-msi'
     New-Item -ItemType Directory -Path $failedMsi | Out-Null
+    & "$root/scripts/build.ps1" -Target Native -ReleaseVersion '1.0.2'
     & "$root/scripts/build.ps1" -Target Installer -ReleaseVersion '1.0.2'
     $msiPath = Join-Path $failedMsi 'GhidraLaunchInstallerRust.msi'
     Copy-Item "$root/GhidraLaunchInstaller/bin/Release/GhidraLaunchInstallerRust.msi" $msiPath
@@ -177,6 +220,7 @@ try {
     Copy-Item "$PayloadRoot/Ghidra.zip", "$PayloadRoot/Versions.wxi" $failedJava
     & dotnet tool run wix build "$PSScriptRoot/fixtures/Upstream.wxs" -arch x86 -d FailInstall=yes -o "$failedJava/OpenJDK21U-jdk_x64.msi"
     if ($LASTEXITCODE -ne 0) { throw 'Failed to build Java-stage failure MSI' }
+    & "$root/scripts/build.ps1" -Target Native -ReleaseVersion '1.0.3'
     & "$root/scripts/build.ps1" -Target Installer -ReleaseVersion '1.0.3'
     & "$root/scripts/build.ps1" -Target Internal -ReleaseVersion '1.0.3' -PayloadRoot $failedJava -VersionsFile "$failedJava/Versions.wxi"
     & "$root/scripts/build.ps1" -Target Setup -ReleaseVersion '1.0.3' -PayloadRoot $failedJava -VersionsFile "$failedJava/Versions.wxi"
@@ -200,7 +244,27 @@ try {
     $last = $null
     if (Test-Path -LiteralPath "$install/Ghidra") { throw 'Uninstall left its owned Ghidra tree' }
     Write-Host 'Legacy migration, reinstall, downgrade, and same/newer-version switching checks passed.'
+    $completed = $true
+} catch {
+    Write-Host "Upgrade failure diagnostics: $LogRoot"
+    throw
 } finally {
-    if ($last) { Invoke-Bundle $last '/uninstall' }
-    Remove-Item -LiteralPath $scratch -Recurse -Force
+    try {
+        if ($last) { Invoke-Bundle $last '/uninstall' }
+    } catch {
+        if ($completed) { throw }
+        Write-Warning "Cleanup failed after the original upgrade error: $_"
+    } finally {
+        try {
+            foreach ($path in $originals) {
+                Copy-Item -LiteralPath (Join-Path $backup (Split-Path $path -Leaf)) -Destination (Join-Path $root $path) -Force
+            }
+            [IO.File]::SetLastWriteTimeUtc((Join-Path $root 'Resources/Version.h'), [datetime]::UtcNow)
+            if ($completed) { Remove-Item -LiteralPath $scratch -Recurse -Force }
+            else { Write-Warning "Preserving failed upgrade fixtures at $scratch" }
+        } catch {
+            if ($completed) { throw }
+            Write-Warning "Input restoration failed after the original upgrade error: $_"
+        }
+    }
 }

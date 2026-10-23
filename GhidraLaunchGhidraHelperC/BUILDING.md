@@ -95,7 +95,11 @@ each test. The tests never download dependencies.
 
 For deterministic backup/install/rollback/cleanup failure tests, build
 `tests/faults.c` **instead of** `main.c`, using the same compiler flags and miniz
-sources. Set `C_HELPER_FAULT_EXE` to that separate test executable. The production
+sources, or run `../scripts/build.ps1 -Target Faults -Configuration Release`
+from this directory. This uses isolated intermediates and produces
+`x64/Release/bin/GhidraLaunchGhidraHelperCFaults.exe`.
+Set `C_HELPER_FAULT_EXE` to that separate test executable. Windows CI builds and
+runs it in both configurations. The production
 project does not compile the driver and has no runtime fault-injection hooks.
 Wine does not necessarily implement directory sharing or symlink creation;
 the Win32-specific tests capability-check these behaviors and explicitly skip

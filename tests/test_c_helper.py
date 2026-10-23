@@ -27,22 +27,29 @@ WINDOWS = sys.platform == "win32"
 MARKER = ".ghidralaunch-source.sha256"
 
 
-@unittest.skipUnless(EXE and ARTIFACTS, "set C_HELPER_EXE and C_HELPER_TEST_ROOT")
 class CHelperTests(unittest.TestCase):
+    exe = EXE
+    fault_exe = FAULT_EXE
+    peer_exe = PEER_EXE
+    artifacts = ARTIFACTS
+    wine = os.environ.get("C_HELPER_WINE", "wine")
+
     def setUp(self):
-        self.root = Path(ARTIFACTS).resolve() / ("case-" + uuid.uuid4().hex)
+        if not self.exe or not self.artifacts:
+            self.skipTest("set helper executable and test root")
+        self.root = Path(self.artifacts).resolve() / ("case-" + uuid.uuid4().hex)
         self.root.mkdir(parents=True)
         self.addCleanup(shutil.rmtree, self.root)
         self.dest = self.root / "destination"
         self.zip = self.root / "fixture.zip"
 
     def command(self, *args, exe=None):
-        exe = exe or EXE
+        exe = exe or self.exe
         if WINDOWS:
             return [exe, *map(str, args)]
         def wine_arg(arg):
             return "Z:" + str(arg).replace("/", "\\") if isinstance(arg, Path) else str(arg)
-        return [os.environ.get("C_HELPER_WINE", "wine"), exe, *map(wine_arg, args)]
+        return [self.wine, exe, *map(wine_arg, args)]
 
     def run_helper(self, *args, code=0):
         result = subprocess.run(self.command(*args), capture_output=True, timeout=90)
@@ -433,8 +440,9 @@ class CHelperTests(unittest.TestCase):
         self.assertEqual((outside / "keep").read_bytes(), b"untouched")
         self.assertFalse(self.dest.exists())
 
-    @unittest.skipUnless(FAULT_EXE, "set C_HELPER_FAULT_EXE for deterministic fault tests")
     def test_deterministic_backup_install_rollback_and_cleanup_failures(self):
+        if not self.fault_exe:
+            self.skipTest("set C_HELPER_FAULT_EXE for deterministic C fault tests")
         for failure in ["backup", "install", "rollback", "cleanup"]:
             with self.subTest(failure=failure):
                 self.archive()
@@ -444,7 +452,7 @@ class CHelperTests(unittest.TestCase):
                 env = os.environ.copy()
                 env["C_HELPER_TEST_FAILURE"] = failure
                 result = subprocess.run(
-                    self.command("extract", self.zip, self.dest, "new", exe=FAULT_EXE),
+                    self.command("extract", self.zip, self.dest, "new", exe=self.fault_exe),
                     capture_output=True, timeout=90, env=env)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertTrue(result.stderr)
@@ -469,10 +477,11 @@ class CHelperTests(unittest.TestCase):
                 for backup in backups:
                     shutil.rmtree(backup)
 
-    @unittest.skipUnless(PEER_EXE, "set C_HELPER_PEER_EXE for C/Rust interoperability")
     def test_peer_helper_owner_marker_interoperability(self):
+        if not self.peer_exe:
+            self.skipTest("set peer helper executable for interoperability")
         def peer(*args):
-            result = subprocess.run(self.command(*args, exe=PEER_EXE),
+            result = subprocess.run(self.command(*args, exe=self.peer_exe),
                                     capture_output=True, timeout=90)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         old = "1.0.0-C-{1111}"

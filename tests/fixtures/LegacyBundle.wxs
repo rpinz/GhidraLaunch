@@ -1,7 +1,7 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
      xmlns:bal="http://schemas.microsoft.com/wix/BalExtension"
      xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
-  <Bundle Name="Ghidra Launch" Manufacturer="rpinz" Version="1.0.0"
+  <Bundle Name="Ghidra Launch" Manufacturer="rpinz" Version="$(var.LegacyVersion)"
           UpgradeCode="{DFE05126-B29E-4298-A06B-63F833BC0BF8}">
     <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkSidebarLicense">
       <bal:WixStandardBootstrapperApplication LicenseUrl="https://unlicense.org/" SuppressRepair="yes" />
