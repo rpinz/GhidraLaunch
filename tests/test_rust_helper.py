@@ -28,6 +28,14 @@ MARKER = ".ghidralaunch-source.sha256"
 
 
 class RustHelperBuildCommandTests(unittest.TestCase):
+    def test_resource_compilation_includes_shared_version_header(self):
+        root = Path(__file__).resolve().parents[1] / "GhidraLaunchGhidraHelperRS"
+        build = (root / "build.rs").read_text()
+        resource = (root / "GhidraLaunchGhidraHelperRS.rc").read_text()
+
+        self.assertIn('ParamsIncludeDirs(&["../Resources"])', build)
+        self.assertIn('#include "Version.h"', resource)
+
     @unittest.skipUnless(WINDOWS, "requires cmd.exe")
     def test_makefile_refreshes_existing_outputs_and_cleans_with_missing_debug(self):
         makefile = Path(__file__).resolve().parents[1] / "GhidraLaunchGhidraHelperRS/Makefile"

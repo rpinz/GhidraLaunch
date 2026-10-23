@@ -1,4 +1,4 @@
-#include "../Resources/Version.h"
+#include "Version.h"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION GHIDRA_LAUNCH_FILEVERSION
