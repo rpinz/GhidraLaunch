@@ -15,14 +15,14 @@
     <Property Id="GHIDRALAUNCHVARIANT" Value="$(var.Variant)" />
     <Property Id="GHIDRALAUNCHOWNER" Value="standalone-$(var.ReleaseVersion)-$(var.Variant)" Secure="yes" />
     <MediaTemplate EmbedCab="yes" />
-    <!-- Schedule late: if a later action in this product's own InstallExecute
-         sequence fails (for example a genuine install failure, or the
-         rollback-test harness's intentional failure), the previous version
-         must not already be gone. Scheduling RemoveExistingProducts after
-         InstallExecute means the new files/registry are only committed, and
-         the old product only removed, once this product's own sequence has
-         actually succeeded. -->
-    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallExecute"
+    <!-- Remove the incumbent variant first, inside this transaction: the two
+         variants share every resource except the launcher binary and the
+         payload-ownership record, but carry different component GUIDs, so
+         installing before removing would let the outgoing variant's component
+         removal delete what the incoming one just wrote. Scheduling after
+         InstallInitialize keeps the removal transactional, so a later failure
+         rolls the previous version back. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
                   DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <Property Id="ALLUSERS" Secure="yes" />
     <Launch Condition="NOT ALLUSERS"

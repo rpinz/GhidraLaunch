@@ -144,6 +144,15 @@ incoming installation. Native helpers accept each other's markers and legacy
 plain-hash markers. The C helper statically links vendored miniz (see its
 provenance/license files); the Rust helper uses locked ZIP and SHA-256 crates.
 
+Setup detects ownership through `HKCU\Software\rpinz\Ghidra Launch`'s
+`PayloadOwner`. The helper is the only package that runs whenever ownership
+changes - Burn skips an already installed launcher MSI when a republished
+bundle ships the identical package - so an owner-aware helper call maintains
+that value alongside the marker: it records the owner after extraction or
+adoption, and retracts it when a matching owner removes the tree. The record
+describes `%LOCALAPPDATA%\Ghidra Launch\Ghidra`, so helper runs against any
+other destination leave it untouched.
+
 ## Code signing policy
 
 **Status:** SignPath Foundation enrollment is not yet confirmed, and the

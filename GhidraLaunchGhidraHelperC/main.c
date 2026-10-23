@@ -8,6 +8,9 @@
 #include "vendor/miniz/miniz.h"
 
 #define MARKER L".ghidralaunch-source.sha256"
+#define OWNER_KEY L"Software\\rpinz\\Ghidra Launch"
+#define OWNER_VALUE L"PayloadOwner"
+#define OWNER_DESTINATION L"Ghidra Launch\\Ghidra"
 
 typedef struct {
     char hash[65];
@@ -404,6 +407,100 @@ static BOOL parse_owner(const wchar_t *arg, char out[129])
         out[i] = (char)arg[i];
     }
     out[n] = 0;
+    return TRUE;
+}
+
+static void widen_owner(const char *owner, wchar_t out[129])
+{
+    size_t i;
+    for (i = 0; owner[i]; ++i)
+        out[i] = (wchar_t)(unsigned char)owner[i];
+    out[i] = L'\0';
+}
+
+/* The record describes the tree Setup manages, so it is maintained only for
+   that destination; standalone extractions elsewhere must never disturb an
+   installed bundle's ownership. */
+static BOOL manages_owner_record(const wchar_t *dest)
+{
+    wchar_t *root = NULL, *path = NULL, *managed = NULL;
+    DWORD size;
+    BOOL same = FALSE;
+    size = GetEnvironmentVariableW(L"LOCALAPPDATA", NULL, 0);
+    if (!size)
+        return FALSE;
+    root = allocate((size_t)size * sizeof(wchar_t));
+    if (!root)
+        return FALSE;
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", root, size) == size - 1) {
+        path = join(root, OWNER_DESTINATION);
+        managed = path ? full_path(path) : NULL;
+        same = managed && !_wcsicmp(managed, dest);
+    }
+    free(managed);
+    free(path);
+    free(root);
+    return same;
+}
+
+/* Setup detects payload ownership through this per-user value. The helper is
+   the only package that runs whenever ownership changes, so it -- not the MSI,
+   which Burn skips when a republished bundle ships an already installed
+   package -- has to keep the record in step with the on-disk marker. */
+static BOOL set_owner_record(const wchar_t *dest, const char *owner)
+{
+    wchar_t text[129];
+    HKEY key;
+    LSTATUS status;
+    if (!manages_owner_record(dest))
+        return TRUE;
+    widen_owner(owner, text);
+    status = RegCreateKeyExW(HKEY_CURRENT_USER, OWNER_KEY, 0, NULL, REG_OPTION_NON_VOLATILE,
+                             KEY_SET_VALUE, NULL, &key, NULL);
+    if (status == ERROR_SUCCESS) {
+        status = RegSetValueExW(key, OWNER_VALUE, 0, REG_SZ, (const BYTE *)text,
+                                (DWORD)((wcslen(text) + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+    if (status != ERROR_SUCCESS) {
+        SetLastError((DWORD)status);
+        return win_error(L"Recording payload ownership", OWNER_KEY);
+    }
+    return TRUE;
+}
+
+static BOOL clear_owner_record(const wchar_t *dest, const char *owner)
+{
+    wchar_t text[129], current[130];
+    HKEY key;
+    DWORD type = 0, bytes = (DWORD)(sizeof(current) - sizeof(wchar_t));
+    LSTATUS status, removal = ERROR_SUCCESS;
+    if (!manages_owner_record(dest))
+        return TRUE;
+    widen_owner(owner, text);
+    status = RegOpenKeyExW(HKEY_CURRENT_USER, OWNER_KEY, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &key);
+    if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND)
+        return TRUE;
+    if (status != ERROR_SUCCESS) {
+        SetLastError((DWORD)status);
+        return win_error(L"Opening payload ownership record", OWNER_KEY);
+    }
+    status = RegQueryValueExW(key, OWNER_VALUE, NULL, &type, (BYTE *)current, &bytes);
+    /* Retract only our own record; an incoming bundle may already have adopted
+       the tree, and its record must outlive this removal. */
+    if (status == ERROR_SUCCESS && type == REG_SZ) {
+        current[bytes / sizeof(wchar_t)] = L'\0';
+        if (!wcscmp(current, text)) {
+            removal = RegDeleteValueW(key, OWNER_VALUE);
+            if (removal == ERROR_FILE_NOT_FOUND)
+                removal = ERROR_SUCCESS;
+        }
+    }
+    RegCloseKey(key);
+    if (removal != ERROR_SUCCESS) {
+        SetLastError((DWORD)removal);
+        return win_error(L"Clearing payload ownership record", OWNER_KEY);
+    }
     return TRUE;
 }
 
@@ -873,6 +970,8 @@ static BOOL extract(const wchar_t *zip_path, const wchar_t *dest, const char *ow
     if (state == 1 && !strcmp(marker.hash, hash)) {
         if (owner && strcmp(owner, marker.owner) && !write_marker(dest, hash, owner))
             goto done;
+        if (owner && !set_owner_record(dest, owner))
+            goto done;
         wprintf(L"Ghidra already extracted at %ls (unchanged); skipping.\n", dest);
         ok = TRUE;
         goto done;
@@ -924,6 +1023,8 @@ static BOOL extract(const wchar_t *zip_path, const wchar_t *dest, const char *ow
         goto done;
     }
     installed = TRUE;
+    if (owner && !set_owner_record(dest, owner))
+        goto done;
     ok = TRUE;
 done:
     if (initialized)
@@ -1008,6 +1109,8 @@ static BOOL remove_destination(const wchar_t *dest, const wchar_t *zip_path, con
         }
     }
     if (!remove_tree(dest))
+        return FALSE;
+    if (owner && !clear_owner_record(dest, owner))
         return FALSE;
     wprintf(L"Removed %ls.\n", dest);
     return TRUE;

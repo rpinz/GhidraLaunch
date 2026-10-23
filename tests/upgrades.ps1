@@ -243,8 +243,14 @@ try {
     New-Item -ItemType Directory -Path $retry | Out-Null
     Copy-Item "$root/GhidraLaunchSetup/bin/Release/GhidraLaunchSetupRust.exe", "$PayloadRoot/Ghidra.zip", "$PayloadRoot/OpenJDK21U-jdk_x64.msi" $retry
     $last = "$retry/GhidraLaunchSetupRust.exe"
+    # This retry bundle ships the launcher MSI the failed Java stage already
+    # installed, so Burn skips that package; ownership must still transfer.
+    $previousOwner = (Get-ItemProperty 'HKCU:\Software\rpinz\Ghidra Launch').PayloadOwner
     Invoke-Bundle $last '/install'
     Assert-Installed Rust '1.0.3'
+    if ((Get-ItemProperty 'HKCU:\Software\rpinz\Ghidra Launch').PayloadOwner -eq $previousOwner) {
+        throw 'Republished bundle with an unchanged launcher MSI did not take payload ownership'
+    }
     Invoke-Bundle $last '/uninstall'
     $last = $null
     if (Test-Path -LiteralPath "$install/Ghidra") { throw 'Uninstall left its owned Ghidra tree' }

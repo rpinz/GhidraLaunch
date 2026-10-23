@@ -40,6 +40,11 @@ function Invoke-Helper {
     }
 }
 
+function Get-PayloadOwnerRecord {
+    (Get-ItemProperty -LiteralPath 'HKCU:\Software\rpinz\Ghidra Launch' -Name PayloadOwner `
+        -ErrorAction SilentlyContinue).PayloadOwner
+}
+
 function New-FixtureZip {
     param([string]$Path, [hashtable]$Entries)
     $archive = [IO.Compression.ZipFile]::Open($Path, [IO.Compression.ZipArchiveMode]::Create)
@@ -55,6 +60,7 @@ function New-FixtureZip {
 }
 
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
+$ownerRecord = Get-PayloadOwnerRecord
 try {
     New-Item -ItemType Directory -Path $scratch | Out-Null
     $zip = Join-Path $scratch 'first.zip'
@@ -155,6 +161,11 @@ try {
             Invoke-Helper $HelperPath[$pair[1]] @('remove', $dest, $zip, '1.0.0-Rust')
             if (Test-Path -LiteralPath $dest) { throw 'Cross-language matching removal failed' }
         }
+    }
+    # Only Setup's managed destination has an ownership record; standalone runs
+    # anywhere else must leave an installed bundle's record alone.
+    if ((Get-PayloadOwnerRecord) -ne $ownerRecord) {
+        throw 'Standalone helper runs changed the installed payload ownership record'
     }
     Write-Host 'Native helper conformance checks passed.'
 } finally {

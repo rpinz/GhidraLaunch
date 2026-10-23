@@ -37,6 +37,13 @@ contents but atomically replaces the marker when a different owner is supplied.
 Without an owner it preserves an existing owner. This prevents a same-version
 old bundle uninstall from deleting the replacement bundle's tree.
 
+An owner-aware call also maintains Setup's detection record, the `PayloadOwner`
+string value under `HKCU\Software\rpinz\Ghidra Launch`: extraction and adoption
+write the owner, and a matching owner-aware removal deletes the value (never
+another owner's). The record only describes
+`%LOCALAPPDATA%\Ghidra Launch\Ghidra`, so calls against any other destination
+leave the registry alone.
+
 The C/Rust interchange format for `.ghidralaunch-source.sha256` is ASCII:
 
 * Standalone: exactly 64 lowercase SHA-256 hex digits, no newline.

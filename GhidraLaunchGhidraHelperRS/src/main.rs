@@ -9,6 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use zip::ZipArchive;
 
 const MARKER_NAME: &str = ".ghidralaunch-source.sha256";
+#[cfg(windows)]
+const OWNER_KEY: &str = r"Software\rpinz\Ghidra Launch";
+#[cfg(windows)]
+const OWNER_VALUE: &str = "PayloadOwner";
+#[cfg(windows)]
+const OWNER_DESTINATION: &str = r"Ghidra Launch\Ghidra";
 static UNIQUE_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +123,186 @@ fn validate_owner(owner: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The record describes the tree Setup manages, so it is maintained only for
+/// that destination; standalone extractions elsewhere must never disturb an
+/// installed bundle's ownership.
+#[cfg(windows)]
+fn manages_owner_record(dest: &Path) -> bool {
+    let Some(root) = env::var_os("LOCALAPPDATA") else {
+        return false;
+    };
+    let managed = Path::new(&root).join(OWNER_DESTINATION);
+    comparable_path(dest) == comparable_path(&managed)
+}
+
+#[cfg(windows)]
+fn comparable_path(path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir().map_or_else(|_| path.to_path_buf(), |directory| directory.join(path))
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase()
+}
+
+/// Setup detects payload ownership through this per-user value. The helper is
+/// the only package that runs whenever ownership changes, so it -- not the MSI,
+/// which Burn skips when a republished bundle ships an already installed
+/// package -- has to keep the record in step with the on-disk marker.
+#[cfg(windows)]
+fn set_owner_record(dest: &Path, owner: &str) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
+        REG_OPTION_NON_VOLATILE, REG_SZ,
+    };
+
+    if !manages_owner_record(dest) {
+        return Ok(());
+    }
+    let path = wide(OWNER_KEY);
+    let name = wide(OWNER_VALUE);
+    let value = wide(owner);
+    let mut key: HKEY = std::ptr::null_mut();
+    let mut status = unsafe {
+        RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            path.as_ptr(),
+            0,
+            std::ptr::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            std::ptr::null(),
+            &mut key,
+            std::ptr::null_mut(),
+        )
+    };
+    if status == ERROR_SUCCESS {
+        status = unsafe {
+            RegSetValueExW(
+                key,
+                name.as_ptr(),
+                0,
+                REG_SZ,
+                value.as_ptr().cast::<u8>(),
+                (value.len() * std::mem::size_of::<u16>()) as u32,
+            )
+        };
+        unsafe { RegCloseKey(key) };
+    }
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "cannot record payload ownership under HKCU\\{OWNER_KEY}: {}",
+            io::Error::from_raw_os_error(status as i32)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn clear_owner_record(dest: &Path, owner: &str) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
+    };
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
+        KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ,
+    };
+
+    if !manages_owner_record(dest) {
+        return Ok(());
+    }
+    let path = wide(OWNER_KEY);
+    let name = wide(OWNER_VALUE);
+    let expected = wide(owner);
+    let mut key: HKEY = std::ptr::null_mut();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            path.as_ptr(),
+            0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE,
+            &mut key,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND {
+        return Ok(());
+    }
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "cannot open payload ownership record under HKCU\\{OWNER_KEY}: {}",
+            io::Error::from_raw_os_error(status as i32)
+        ));
+    }
+
+    let mut current = [0u16; 130];
+    let mut kind = 0u32;
+    let mut bytes = ((current.len() - 1) * std::mem::size_of::<u16>()) as u32;
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            std::ptr::null(),
+            &mut kind,
+            current.as_mut_ptr().cast::<u8>(),
+            &mut bytes,
+        )
+    };
+    // Retract only our own record; an incoming bundle may already have adopted
+    // the tree, and its record has to outlive this removal.
+    let mut removal = ERROR_SUCCESS;
+    if status == ERROR_SUCCESS && kind == REG_SZ {
+        let units = &current[..bytes as usize / std::mem::size_of::<u16>()];
+        let units = match units.iter().position(|unit| *unit == 0) {
+            Some(end) => &units[..end],
+            None => units,
+        };
+        if units == &expected[..expected.len() - 1] {
+            removal = unsafe { RegDeleteValueW(key, name.as_ptr()) };
+            if removal == ERROR_FILE_NOT_FOUND {
+                removal = ERROR_SUCCESS;
+            }
+        }
+    }
+    unsafe { RegCloseKey(key) };
+    if removal != ERROR_SUCCESS {
+        return Err(format!(
+            "cannot clear payload ownership record under HKCU\\{OWNER_KEY}: {}",
+            io::Error::from_raw_os_error(removal as i32)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(Some(0)).collect()
+}
+
+#[cfg(not(windows))]
+fn set_owner_record(_dest: &Path, _owner: &str) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn clear_owner_record(_dest: &Path, _owner: &str) -> Result<(), String> {
+    Ok(())
+}
+
 fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), String> {
     validate_destination_path(dest)?;
     if let Some(owner) = owner {
@@ -142,6 +328,7 @@ fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), Stri
                         )
                         .map_err(|error| format!("cannot update ownership marker: {error}"))?;
                     }
+                    set_owner_record(dest, owner)?;
                 }
                 println!(
                     "Ghidra already extracted at {} (unchanged); skipping.",
@@ -290,6 +477,9 @@ fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), Stri
             )
         })?;
     }
+    if let Some(owner) = owner {
+        set_owner_record(dest, owner)?;
+    }
     println!("Extracted Ghidra to {}.", dest.display());
     Ok(())
 }
@@ -375,6 +565,9 @@ fn remove(dest: &Path, zip_path: Option<&Path>, owner: Option<&str>) -> Result<(
 
     remove_tree_no_follow(dest)
         .map_err(|error| format!("cannot remove {}: {error}", dest.display()))?;
+    if let Some(owner) = owner {
+        clear_owner_record(dest, owner)?;
+    }
     println!("Removed {}.", dest.display());
     Ok(())
 }
