@@ -33,6 +33,8 @@ class RustHelperBuildCommandTests(unittest.TestCase):
         build = (root / "build.rs").read_text()
         resource = (root / "GhidraLaunchGhidraHelperRS.rc").read_text()
 
+        self.assertIn("embed_resource::compile_for(", build)
+        self.assertIn('"GhidraLaunchGhidraHelperRS"', build)
         self.assertIn('ParamsIncludeDirs(&["../Resources"])', build)
         self.assertIn('#include "Version.h"', resource)
 
