@@ -663,17 +663,12 @@ fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
+    let source = to_wide_verbatim(source)?;
+    let destination = to_wide_verbatim(destination)?;
     let success = unsafe {
         MoveFileExW(
             source.as_ptr(),
@@ -728,6 +723,41 @@ fn validate_destination_path(path: &Path) -> Result<(), String> {
             "destination must name a directory below its parent: {}",
             path.display()
         ));
+    }
+    reject_reparse_ancestors(path)?;
+    Ok(())
+}
+
+/// Check every existing ancestor of `path`, not just the leaf, and never
+/// traverse through a junction or symlink. Mirrors the C helper's
+/// `directories()`/`safe_destination()` ancestor walk.
+fn reject_reparse_ancestors(path: &Path) -> Result<(), String> {
+    let mut ancestors: Vec<&Path> = path.ancestors().collect();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) => {
+                let reparse = is_reparse_point(ancestor).map_err(|error| {
+                    format!(
+                        "cannot inspect destination ancestor {}: {error}",
+                        ancestor.display()
+                    )
+                })?;
+                if reparse || !metadata.is_dir() {
+                    return Err(format!(
+                        "destination path crosses a reparse point or non-directory: {}",
+                        ancestor.display()
+                    ));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect destination ancestor {}: {error}",
+                    ancestor.display()
+                ))
+            }
+        }
     }
     Ok(())
 }
@@ -961,18 +991,55 @@ fn is_reparse_point(path: &Path) -> io::Result<bool> {
 
 #[cfg(windows)]
 fn is_reparse_point(path: &Path) -> io::Result<bool> {
-    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileAttributesW, FILE_ATTRIBUTE_REPARSE_POINT, INVALID_FILE_ATTRIBUTES,
     };
 
-    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let path = to_wide_verbatim(path)?;
     let attributes = unsafe { GetFileAttributesW(path.as_ptr()) };
     if attributes == INVALID_FILE_ATTRIBUTES {
         Err(io::Error::last_os_error())
     } else {
         Ok(attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
     }
+}
+
+/// Build a `\\?\`-prefixed (extended-length) wide string for direct Win32 API
+/// calls so paths beyond MAX_PATH (260 chars) are handled correctly; `fs::*`
+/// already does this internally, but manual `GetFileAttributesW`/`MoveFileExW`
+/// calls do not unless we prefix the path ourselves.
+#[cfg(windows)]
+fn to_wide_verbatim(path: &Path) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let text = path.as_os_str().to_string_lossy();
+    if text.starts_with(r"\\?\") || text.starts_with(r"\\.\") {
+        return Ok(path.as_os_str().encode_wide().chain(Some(0)).collect());
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()?.join(path)
+    };
+
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+
+    let text = normalized.to_string_lossy().replace('/', "\\");
+    let prefixed = match text.strip_prefix(r"\\") {
+        Some(rest) => format!(r"\\?\UNC\{rest}"),
+        None => format!(r"\\?\{text}"),
+    };
+    Ok(OsStr::new(&prefixed).encode_wide().chain(Some(0)).collect())
 }
 
 #[cfg(test)]
