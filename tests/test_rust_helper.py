@@ -38,6 +38,7 @@ class RustHelperBuildCommandTests(unittest.TestCase):
         self.assertIn('ParamsIncludeDirs(&["../Resources"])', build)
         self.assertIn('#include "winres.h"', resource)
         self.assertIn('#include "Version.h"', resource)
+        self.assertIn('VALUE "FileVersion", GHIDRA_LAUNCH_VERSION', resource)
 
     @unittest.skipUnless(WINDOWS, "requires cmd.exe")
     def test_makefile_refreshes_existing_outputs_and_cleans_with_missing_debug(self):

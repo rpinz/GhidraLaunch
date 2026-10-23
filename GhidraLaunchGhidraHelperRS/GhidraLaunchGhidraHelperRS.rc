@@ -16,7 +16,7 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "Ghidra Launch\0"
       VALUE "FileDescription", "Ghidra Launch Ghidra Helper\0"
-      VALUE "FileVersion", GHIDRA_LAUNCH_PRODUCT_VERSION
+      VALUE "FileVersion", GHIDRA_LAUNCH_VERSION
       VALUE "InternalName", "GhidraLaunchGhidraHelperRS\0"
       VALUE "OriginalFilename", "GhidraLaunchGhidraHelperRS.exe\0"
       VALUE "ProductName", "Ghidra Launch\0"
