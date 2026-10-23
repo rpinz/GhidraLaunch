@@ -45,6 +45,20 @@ function Invoke-Bundle([string]$Path, [string]$Action, [bool]$Success = $true) {
     } finally { $process.Dispose() }
 }
 
+function Wait-ForFileReady([string]$Path, [int]$TimeoutSeconds = 10) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ($true) {
+        try {
+            $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $stream.Dispose()
+            return
+        } catch [IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) { throw "Timed out waiting for exclusive access to $Path`: $_" }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+}
+
 function Assert-Shortcuts([string]$Launcher) {
     $shell = New-Object -ComObject WScript.Shell
     foreach ($link in @(
@@ -182,6 +196,17 @@ try {
     $database.Commit()
     [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($database)
     [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
+    $database = $null
+    $installer = $null
+    # Releasing the Windows Installer COM objects does not guarantee the
+    # underlying file handle is closed immediately (background AV scanning or
+    # the Installer's own SxS cache can briefly hold it), which races with
+    # wix.exe opening the same file as a bind input below. Force the RCWs to
+    # be collected and wait until the file is actually free before continuing.
+    [GC]::Collect()
+    [GC]::WaitForPendingFinalizers()
+    [GC]::Collect()
+    Wait-ForFileReady $msiPath
     $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
     if (-not $msbuild) { throw 'MSBuild not found for failed-MSI rollback fixture' }
     & "$root/scripts/build.ps1" -Target Internal -ReleaseVersion '1.0.2' -PayloadRoot $PayloadRoot -VersionsFile "$PayloadRoot/Versions.wxi"
