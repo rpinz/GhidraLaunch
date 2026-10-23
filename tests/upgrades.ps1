@@ -175,37 +175,17 @@ try {
     & "$root/scripts/build.ps1" -Target Installer -ReleaseVersion '1.0.2'
     $msiPath = Join-Path $failedMsi 'GhidraLaunchInstallerRust.msi'
     Copy-Item "$root/GhidraLaunchInstaller/bin/Release/GhidraLaunchInstallerRust.msi" $msiPath
-    $installer = New-Object -ComObject WindowsInstaller.Installer
-    $database = $installer.OpenDatabase($msiPath, 1)
-    $view = $database.OpenView("SELECT ``Name`` FROM ``_Tables`` WHERE ``Name`` = 'CustomAction'")
+    # Perform the Windows Installer COM edit in its own process: the STA COM
+    # apartment can defer releasing its file handle well past when
+    # FinalReleaseComObject/GC returns control to the caller, racing with
+    # wix.exe opening the same file as a bind input below. A child process
+    # exiting guarantees the OS has closed all of its handles.
+    $injectProcess = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-File', "$PSScriptRoot/fixtures/inject-failing-custom-action.ps1", '-MsiPath', $msiPath
+    ) -Wait -PassThru
     try {
-        $view.Execute()
-        $hasCustomActions = $null -ne $view.Fetch()
-    } finally { $view.Close() }
-    if (-not $hasCustomActions) {
-        $view = $database.OpenView('CREATE TABLE `CustomAction` (`Action` CHAR(72) NOT NULL, `Type` SHORT NOT NULL, `Source` CHAR(72), `Target` CHAR(255) PRIMARY KEY `Action`)')
-        try { $view.Execute() } finally { $view.Close() }
-    }
-    foreach ($sql in @(
-        "INSERT INTO ``CustomAction`` (``Action``, ``Type``, ``Target``) VALUES ('TestFailInstall', 19, 'Intentional rollback test')",
-        "INSERT INTO ``InstallExecuteSequence`` (``Action``, ``Condition``, ``Sequence``) VALUES ('TestFailInstall', 'NOT REMOVE', 4001)"
-    )) {
-        $view = $database.OpenView($sql)
-        try { $view.Execute() } finally { $view.Close() }
-    }
-    $database.Commit()
-    [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($database)
-    [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
-    $database = $null
-    $installer = $null
-    # Releasing the Windows Installer COM objects does not guarantee the
-    # underlying file handle is closed immediately (background AV scanning or
-    # the Installer's own SxS cache can briefly hold it), which races with
-    # wix.exe opening the same file as a bind input below. Force the RCWs to
-    # be collected and wait until the file is actually free before continuing.
-    [GC]::Collect()
-    [GC]::WaitForPendingFinalizers()
-    [GC]::Collect()
+        if ($injectProcess.ExitCode -ne 0) { throw "Failed to inject rollback-test custom action (exit $($injectProcess.ExitCode))" }
+    } finally { $injectProcess.Dispose() }
     Wait-ForFileReady $msiPath
     $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
     if (-not $msbuild) { throw 'MSBuild not found for failed-MSI rollback fixture' }
