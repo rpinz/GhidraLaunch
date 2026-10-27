@@ -401,3 +401,5 @@ FodyWeavers.xsd
 *.res
 Ghidra/***
 GhidraLaunchSetup/Versions.wxi
+
+winget/out/

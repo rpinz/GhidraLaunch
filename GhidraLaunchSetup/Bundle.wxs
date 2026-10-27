@@ -1,16 +1,27 @@
 <?include $(var.VersionsFile) ?>
+<!-- One source for all bundle stages (Stage = Setup | Core | Java); the variant
+     (C | Rust) is selected by the Variant define. Values shared by every stage
+     are defined once here. -->
+<?define BundleName = "Ghidra Launch" ?>
+<?define BundleManufacturer = "rpinz" ?>
+<?define BundleCopyright = "The Unlicense" ?>
+<?define BundleCondition = "VersionNT &gt;= v6.3 AND VersionNT64 &gt;= v6.3" ?>
+<?define LicenseUrl = "https://unlicense.org/" ?>
+<?define AboutUrl = "https://github.com/rpinz/GhidraLaunch" ?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
-  <Bundle Name="Ghidra Launch" Manufacturer="rpinz" Version="$(var.ReleaseVersion)"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+<?if $(var.Stage) = Setup ?>
+  <Bundle Name="$(var.BundleName)" Manufacturer="$(var.BundleManufacturer)" Version="$(var.ReleaseVersion)"
           Tag="$(var.Variant)"
-          AboutUrl="https://github.com/rpinz/GhidraLaunch"
-          Copyright="The Unlicense"
+          AboutUrl="$(var.AboutUrl)"
+          Copyright="$(var.BundleCopyright)"
           IconSourceFile="..\Resources\Ghidra.ico"
           UpgradeCode="{933B00E3-642F-4745-946E-15FC9F064B43}"
-          Condition="VersionNT &gt;= v6.3 AND VersionNT64 &gt;= v6.3">
+          Condition="$(var.BundleCondition)">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication Theme="hyperlinkSidebarLicense"
-          LicenseUrl="https://unlicense.org/" LogoFile="..\Resources\Logo.png"
+          LicenseUrl="$(var.LicenseUrl)" LogoFile="..\Resources\Logo.png"
           LogoSideFile="..\Resources\LogoSide.png" SuppressRepair="yes" />
     </BootstrapperApplication>
     <Chain>
@@ -31,4 +42,61 @@
       </BundlePackage>
     </Chain>
   </Bundle>
+<?elseif $(var.Stage) = Core ?>
+  <Bundle Name="$(var.BundleName)" Manufacturer="$(var.BundleManufacturer)" Version="$(var.ReleaseVersion)"
+          Tag="$(var.Variant)" DisableModify="yes" DisableRemove="yes"
+          AboutUrl="$(var.AboutUrl)"
+          HelpUrl="https://htmlpreview.github.io/?https://github.com/NationalSecurityAgency/ghidra/blob/stable/GhidraDocs/InstallationGuide.html"
+          Copyright="$(var.BundleCopyright)"
+          IconSourceFile="..\Resources\Ghidra.ico"
+          SplashScreenSourceFile="..\Resources\Splash.bmp"
+          UpgradeCode="{DFE05126-B29E-4298-A06B-63F833BC0BF8}"
+          Condition="$(var.BundleCondition)">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+          Theme="hyperlinkSidebarLicense" LicenseUrl="$(var.LicenseUrl)"
+          LogoFile="..\Resources\Logo.png" LogoSideFile="..\Resources\LogoSide.png"
+          SuppressRepair="yes" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage Id="Launcher$(var.Variant)" DisplayName="Ghidra Launch launcher"
+                  SourceFile="$(var.MsiPath)" Compressed="yes" Vital="yes">
+        <MsiProperty Name="GHIDRALAUNCHOWNER" Value="[WixBundleProviderKey]" />
+      </MsiPackage>
+      <!-- Ownership is adopted even for unchanged archives. An outgoing bundle
+           must not remove the incoming bundle's tree after its chain completes. -->
+      <ExePackage Id="Ghidra$(var.Variant)" DisplayName="Ghidra files"
+                  SourceFile="$(var.HelperPath)" Compressed="yes" PerMachine="no" Vital="yes"
+                  InstallArguments='extract "Ghidra.zip" "[LocalAppDataFolder]Ghidra Launch\Ghidra" "[WixBundleProviderKey]"'
+                  UninstallArguments='remove "[LocalAppDataFolder]Ghidra Launch\Ghidra" "Ghidra.zip" "[WixBundleProviderKey]"'
+                  DetectCondition="GhidraPayloadInstalled AND GhidraPayloadOwner = WixBundleProviderKey">
+        <Payload Id="GhidraZipPayload" Name="Ghidra.zip"
+                 SourceFile="$(var.PayloadRoot)\Ghidra.zip" Compressed="no"
+                 DownloadUrl="$(var.GhidraDownloadUrl)" />
+      </ExePackage>
+    </Chain>
+    <util:FileSearch Id="GhidraPayloadMarker" Variable="GhidraPayloadInstalled"
+                     Path="[LocalAppDataFolder]Ghidra Launch\Ghidra\.ghidralaunch-source.sha256"
+                     Result="exists" />
+    <util:RegistrySearch Id="GhidraOwner" Variable="GhidraPayloadOwner"
+                         Root="HKCU" Key="Software\rpinz\Ghidra Launch"
+                         Value="PayloadOwner" Result="value" />
+  </Bundle>
+<?else?>
+  <Bundle Name="$(var.BundleName)" Manufacturer="$(var.BundleManufacturer)" Version="$(var.ReleaseVersion)"
+          Copyright="$(var.BundleCopyright)" DisableModify="yes" DisableRemove="yes"
+          UpgradeCode="{9325B8EC-A307-482D-9072-A5C9EE1D172A}"
+          Condition="$(var.BundleCondition)">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense"
+          LicenseUrl="$(var.LicenseUrl)" SuppressRepair="yes" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage Id="Temurin" DisplayName="Java runtime (Eclipse Temurin)"
+                  SourceFile="$(var.PayloadRoot)\OpenJDK$(var.JavaVersion)U-jdk_x64.msi"
+                  Compressed="no" DownloadUrl="$(var.JavaDownloadUrl)"
+                  Permanent="yes" Visible="yes" Vital="yes" />
+    </Chain>
+  </Bundle>
+<?endif?>
 </Wix>

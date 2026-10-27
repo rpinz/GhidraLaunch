@@ -17,14 +17,12 @@
     <MsiPath>$(SourceRoot)GhidraLaunchInstaller\bin\$(Configuration)\GhidraLaunchInstaller$(Variant).msi</MsiPath>
     <CorePath>$(MSBuildThisFileDirectory)bin\$(Configuration)\GhidraLaunchCore$(Variant).exe</CorePath>
     <JavaPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\GhidraLaunchJava.exe</JavaPath>
-    <DefineConstants>$(DefineConstants);Variant=$(Variant);ReleaseVersion=$(ReleaseVersion);HelperPath=$(HelperPath);MsiPath=$(MsiPath);CorePath=$(CorePath);JavaPath=$(JavaPath);PayloadRoot=$(PayloadRoot);VersionsFile=$(VersionsFile)</DefineConstants>
+    <DefineConstants>$(DefineConstants);Stage=$(Stage);Variant=$(Variant);ReleaseVersion=$(ReleaseVersion);HelperPath=$(HelperPath);MsiPath=$(MsiPath);CorePath=$(CorePath);JavaPath=$(JavaPath);PayloadRoot=$(PayloadRoot);VersionsFile=$(VersionsFile)</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="WixToolset.Bal.wixext" Version="5.0.2" />
     <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
-    <Compile Include="Bundle.wxs" Condition="'$(Stage)' == 'Setup'" />
-    <Compile Include="Core.wxs" Condition="'$(Stage)' == 'Core'" />
-    <Compile Include="Java.wxs" Condition="'$(Stage)' == 'Java'" />
+    <Compile Include="Bundle.wxs" />
     <ProjectReference Include="GhidraLaunchCore$(Variant).wixproj" Condition="'$(Stage)' == 'Setup'" SetPlatform="Platform=x86" />
     <ProjectReference Include="GhidraLaunchJava.wixproj" Condition="'$(Stage)' == 'Setup'" SetPlatform="Platform=x86" />
     <ProjectReference Include="..\GhidraLaunchInstaller\GhidraLaunchInstaller$(Variant).wixproj" Condition="'$(Stage)' == 'Core'" SetPlatform="Platform=x86" />

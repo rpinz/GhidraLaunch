@@ -51,10 +51,37 @@ installs the selected launcher and sets `GHIDRA_HOME`). If you previously set
 `GHIDRA_HOME` to a different Ghidra install, running this setup will
 overwrite it to point at the bundled copy.
 
+The launchers start Ghidra directly, without `cmd.exe`, following the same
+steps as `ghidraRun.bat` and `support\launch.bat`: they run Ghidra's
+`LaunchSupport` to choose a supported JDK and read `launch.properties` (JVM
+arguments and environment variables), honour `GHIDRA_MAXMEM`,
+`GHIDRA_GUI_MAXMEM`, `GHIDRA_JAVA_OPTIONS`, `GHIDRA_GUI_JAVA_OPTIONS` and
+`JAVA_HOME`, forward command-line arguments, and start `javaw.exe` with no
+console window. Java is found on `PATH`, then `JAVA_HOME`. If the folder is not
+a packaged Ghidra (for example a source checkout), Java cannot be started
+this way, or the path contains `!`, the launcher falls back to running
+`ghidraRun.bat`.
+
 **Uninstalling** removes the extracted Ghidra folder along with the
 launchers, including any extensions, scripts, or other files you placed
 inside it — back up anything you want to keep from that folder first. Ghidra
 project files stored elsewhere in your profile are not affected.
+
+## WinGet
+
+Each stable release (`vX.Y.Z[.W]`) produces WinGet manifests for the two
+setup bundles as the `winget-manifests` workflow artifact:
+`rpinz.GhidraLaunchC` and `rpinz.GhidraLaunchRust`. They use the setup EXE as
+a `burn` installer (silent switches `/quiet /norestart`; Temurin still asks for
+administrator approval). Templates are in `winget/templates`; render them locally
+with `python scripts/winget_manifests.py --tag vX.Y.Z` after building the
+setup bundles. Test with
+`winget install --manifest <folder>` (requires
+`winget settings --enable LocalManifestFiles`), then submit the folder to
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) manually.
+The bundles are not yet Authenticode-signed, so SmartScreen may warn and
+WinGet moderators may object until signing is enabled. Publishing is not
+automated; the hash is taken from the final (post-signing) bundles.
 
 ## Build
 
@@ -70,6 +97,9 @@ independent of the launcher.
 Installer builds additionally require the .NET 8 SDK and restored WiX **5.0.2**
 SDK/extensions. Run `dotnet tool restore` for the pinned WiX CLI; no globally
 installed WiX v3 tools are used. .NET is a build prerequisite only.
+All bundle stages (Setup, Core, Java) share one source,
+`GhidraLaunchSetup/Bundle.wxs`; the per-variant `.wixproj` files only pick the
+`Variant` (`C` or `Rust`, C by default) and `Stage`.
 Run `download.sh` (Bash, curl, jq, unzip) or `download.ps1` to
 download and checksum-verify the Ghidra release and Temurin installer, and to
 record their resolved download URLs in `GhidraLaunchSetup/Versions.wxi`. The
