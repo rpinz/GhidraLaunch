@@ -267,14 +267,6 @@ fn launch() -> i32 {
         }
     };
 
-    // make sure ghidraRun.bat exists before starting anything
-    if !directory.join(BATCH_FILE).is_file() {
-        return fail(
-            "ghidraRun.bat not found in GHIDRA_HOME or next to the launcher, error",
-            io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND),
-        );
-    }
-
     // start Ghidra directly; fall back to ghidraRun.bat when that is not possible
     match launch_native(&directory) {
         Some(EXIT_SUCCESS) => return EXIT_SUCCESS,
@@ -283,6 +275,17 @@ fn launch() -> i32 {
             return code;
         }
         None => {}
+    }
+
+    // the fallback needs ghidraRun.bat
+    if !directory.join(BATCH_FILE).is_file() {
+        return fail(
+            &format!(
+                "Ghidra could not be started: ghidraRun.bat not found in {} (GHIDRA_HOME or the launcher folder), error",
+                directory.display()
+            ),
+            io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND),
+        );
     }
 
     // absolute path to cmd.exe, never resolved through the search path

@@ -380,22 +380,26 @@ int APIENTRY wWinMain(
     return EXIT_FAILURE;
   }
 
-  // make sure ghidraRun.bat exists before starting anything
-  if (swprintf_s(wCommandLine, _countof(wCommandLine), L"%ls\\%ls", wDirectory, BATCH_FILE) < 0) {
-    ShowError(L"Unable to locate ghidraRun.bat, error", ERROR_FILENAME_EXCED_RANGE);
-    return EXIT_FAILURE;
-  }
-  dwLength = GetFileAttributesW(wCommandLine);
-  if (dwLength == INVALID_FILE_ATTRIBUTES || (dwLength & FILE_ATTRIBUTE_DIRECTORY)) {
-    ShowError(L"ghidraRun.bat not found in GHIDRA_HOME or next to the launcher, error", ERROR_FILE_NOT_FOUND);
-    return EXIT_FAILURE;
-  }
   // start Ghidra directly; fall back to ghidraRun.bat when that is not possible
   if (LaunchNative(wDirectory, lpCmdLine, &dwExitCode)) {
     if (dwExitCode != EXIT_SUCCESS) {
       ShowError(L"Ghidra exited with code", dwExitCode);
     }
     return (int)dwExitCode;
+  }
+
+  // the fallback needs ghidraRun.bat
+  if (swprintf_s(wCommandLine, _countof(wCommandLine), L"%ls\\%ls", wDirectory, BATCH_FILE) < 0) {
+    ShowError(L"Unable to locate ghidraRun.bat, error", ERROR_FILENAME_EXCED_RANGE);
+    return EXIT_FAILURE;
+  }
+  dwLength = GetFileAttributesW(wCommandLine);
+  if (dwLength == INVALID_FILE_ATTRIBUTES || (dwLength & FILE_ATTRIBUTE_DIRECTORY)) {
+    if (swprintf_s(wCommandLine, _countof(wCommandLine), L"Ghidra could not be started: ghidraRun.bat not found in %.500ls (GHIDRA_HOME or the launcher folder), error", wDirectory) < 0) {
+      wcscpy_s(wCommandLine, _countof(wCommandLine), L"ghidraRun.bat not found in GHIDRA_HOME or next to the launcher, error");
+    }
+    ShowError(wCommandLine, ERROR_FILE_NOT_FOUND);
+    return EXIT_FAILURE;
   }
 
   // absolute path to cmd.exe, never resolved through the search path
