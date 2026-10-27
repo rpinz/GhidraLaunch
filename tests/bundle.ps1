@@ -22,12 +22,20 @@ function Assert-DisplayNames($baFolder, $expected, $scope) {
         }
     }
 }
+function Assert-BundleCondition($manifest, $scope) {
+    $conditions = @($manifest.DocumentElement.SelectNodes('./*[local-name() = "Condition"]'))
+    if ($conditions.Count -ne 1 -or
+        $conditions[0].InnerText -ne 'VersionNT >= v6.3 AND VersionNT64 >= v6.3') {
+        throw "$scope has an invalid or escaped minimum-Windows condition"
+    }
+}
 try {
     $contents = Join-Path $scratch 'contents'
     $ba = Join-Path $scratch 'ba'
     & dotnet tool run wix burn extract $BundlePath -o $contents -oba $ba
     if ($LASTEXITCODE -ne 0) { throw 'Failed to extract built bundle' }
     $outer = [xml](Get-Content -LiteralPath (Join-Path $ba 'manifest.xml') -Raw)
+    Assert-BundleCondition $outer 'Setup'
     $outerNs = [Xml.XmlNamespaceManager]::new($outer.NameTable)
     $outerNs.AddNamespace('b', $outer.DocumentElement.NamespaceURI)
     $outerPackages = @($outer.SelectNodes('//b:Chain/b:BundlePackage', $outerNs))
@@ -59,6 +67,7 @@ try {
     & dotnet tool run wix burn extract $java[0].FullName -o $javaContents -oba $javaBa
     if ($LASTEXITCODE -ne 0) { throw 'Failed to extract Java stage' }
     $javaManifest = [xml](Get-Content (Join-Path $javaBa 'manifest.xml') -Raw)
+    Assert-BundleCondition $javaManifest 'Java stage'
     $javaPackage = @($javaManifest.SelectNodes('//b:Chain/b:MsiPackage', $outerNs))
     if ($javaPackage.Count -ne 1 -or $javaPackage[0].Id -ne 'Temurin' -or
         $javaPackage[0].Permanent -ne 'yes') { throw 'Java stage must retain the shared JDK' }
@@ -88,6 +97,7 @@ try {
     $embedded = @(Get-ChildItem -LiteralPath $contents -Recurse -File)
     if ($embedded.Count -ne 2) { throw 'Bundle contains unexpected payloads (upstream software must remain external)' }
     $manifest = [xml](Get-Content -LiteralPath (Join-Path $ba 'manifest.xml') -Raw)
+    Assert-BundleCondition $manifest 'Core'
     $ns = [Xml.XmlNamespaceManager]::new($manifest.NameTable)
     $ns.AddNamespace('b', $manifest.DocumentElement.NamespaceURI)
     $exe = @($manifest.SelectNodes('//b:Chain/b:ExePackage', $ns))
