@@ -67,7 +67,7 @@ try {
     $jdkBin = Split-Path $javacPath -Parent
     $jdkHome = Split-Path $jdkBin -Parent
     $sources = Join-Path $scratch 'stub'
-    New-Item -ItemType Directory -Path "$sources/ghidra" | Out-Null
+    New-Item -ItemType Directory -Path "$sources/ghidra", "$sources/out" | Out-Null
     Set-Content -LiteralPath "$sources/LaunchSupport.java" -Encoding Ascii -Value @'
 public class LaunchSupport {
     public static void main(String[] args) {
