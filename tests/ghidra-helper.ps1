@@ -61,6 +61,7 @@ function New-FixtureZip {
 
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 $ownerRecord = Get-PayloadOwnerRecord
+$previousLocalAppData = $env:LOCALAPPDATA
 try {
     New-Item -ItemType Directory -Path $scratch | Out-Null
     $zip = Join-Path $scratch 'first.zip'
@@ -69,6 +70,7 @@ try {
     New-FixtureZip $changed @{ 'ghidra_PUBLIC/ghidraRun.bat' = '@echo off'; 'ghidra_PUBLIC/support/x.txt' = 'second' }
 
     foreach ($helper in $HelperPath) {
+        $env:LOCALAPPDATA = Join-Path $scratch ([IO.Path]::GetFileNameWithoutExtension($helper) + '-profile')
         $dest = Join-Path $scratch ("Ghidra space " + [char]0xe9)
         $file = Join-Path $dest 'support/x.txt'
         $marker = Join-Path $dest '.ghidralaunch-source.sha256'
@@ -84,6 +86,9 @@ try {
 
         Invoke-Helper $helper @('extract', $changed, $dest)
         if ((Get-Content -LiteralPath $file -Raw) -ne 'second') { throw 'Changed source did not re-extract' }
+        $recovered = @(Get-ChildItem -LiteralPath "$env:LOCALAPPDATA/Ghidra Launch Recovery" -Recurse -File |
+            Where-Object { $_.Name -eq 'x.txt' -and [IO.File]::ReadAllText($_.FullName) -eq 'untouched' })
+        if (-not $recovered.Count) { throw 'Changed source discarded the edited upstream file' }
         Invoke-Helper $helper @('remove', $dest, $zip)
         Invoke-Helper $helper @('remove', $dest, "$scratch/missing.zip")
         if (-not (Test-Path -LiteralPath $file)) { throw 'Non-matching removal deleted the tree' }
@@ -150,6 +155,7 @@ try {
     }
 
     if ($HelperPath.Count -eq 2) {
+        $env:LOCALAPPDATA = Join-Path $scratch 'interop-profile'
         $dest = Join-Path $scratch 'interop'
         foreach ($pair in @(@(0, 1), @(1, 0))) {
             Invoke-Helper $HelperPath[$pair[0]] @('extract', $zip, $dest, '1.0.0-C')
@@ -158,6 +164,11 @@ try {
             if ((Get-Content -LiteralPath "$dest/support/x.txt" -Raw) -ne 'keep') { throw 'Ownership adoption re-extracted unchanged content' }
             Invoke-Helper $HelperPath[$pair[0]] @('remove', $dest, $zip, '1.0.0-C')
             if (-not (Test-Path -LiteralPath $dest)) { throw 'Outgoing owner deleted adopted payload' }
+            Invoke-Helper $HelperPath[$pair[1]] @('remove', $dest, $zip, '1.0.0-Rust')
+            if (-not (Test-Path -LiteralPath $dest) -or [IO.File]::ReadAllText("$dest/support/x.txt") -ne 'keep') {
+                throw 'Cross-language uninstall discarded customizations'
+            }
+            [IO.File]::WriteAllText("$dest/support/x.txt", 'first')
             Invoke-Helper $HelperPath[$pair[1]] @('remove', $dest, $zip, '1.0.0-Rust')
             if (Test-Path -LiteralPath $dest) { throw 'Cross-language matching removal failed' }
         }
@@ -169,5 +180,6 @@ try {
     }
     Write-Host 'Native helper conformance checks passed.'
 } finally {
+    $env:LOCALAPPDATA = $previousLocalAppData
     if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
 }

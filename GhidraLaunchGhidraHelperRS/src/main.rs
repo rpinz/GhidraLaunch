@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use zip::ZipArchive;
 
 const MARKER_NAME: &str = ".ghidralaunch-source.sha256";
+const INVENTORY_NAME: &str = ".ghidralaunch-inventory";
+const REMOVAL_NAME: &str = ".ghidralaunch-removal";
+const METADATA_NAMES: [&str; 3] = [MARKER_NAME, INVENTORY_NAME, REMOVAL_NAME];
 #[cfg(windows)]
 const OWNER_KEY: &str = r"Software\rpinz\Ghidra Launch";
 #[cfg(windows)]
@@ -29,6 +32,132 @@ struct Entry {
     path: PathBuf,
     components: Vec<String>,
     is_dir: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Item {
+    Directory,
+    File(String),
+}
+
+type Tree = BTreeMap<String, Item>;
+
+#[derive(Debug)]
+struct Inventory {
+    source: String,
+    tree: Tree,
+}
+
+#[derive(Debug)]
+struct CentralEntry {
+    attributes: u32,
+    flags: u16,
+}
+
+struct DestinationLock {
+    _file: File,
+    #[cfg(not(windows))]
+    path: PathBuf,
+}
+
+impl DestinationLock {
+    fn acquire(dest: &Path) -> Result<Self, String> {
+        let parent = sibling_parent(dest);
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create destination parent: {error}"))?;
+        reject_reparse_ancestors(parent)?;
+        let mut name = dest
+            .file_name()
+            .ok_or("destination has no directory name")?
+            .to_os_string();
+        name.push(".ghidralaunch.lock");
+        let path = parent.join(name);
+        if let Ok(metadata) = fs::symlink_metadata(&path) {
+            if !metadata.is_file() || is_reparse_point(&path).map_err(|error| error.to_string())? {
+                return Err(format!("unsafe destination lock: {}", path.display()));
+            }
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_DELETE_ON_CLOSE, FILE_FLAG_OPEN_REPARSE_POINT,
+            };
+            options
+                .create(true)
+                .share_mode(0)
+                .custom_flags(FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        #[cfg(not(windows))]
+        options.create_new(true);
+        let file = options.open(&path).map_err(|error| {
+            format!(
+                "cannot lock destination {}; another operation may be active: {error}",
+                dest.display()
+            )
+        })?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            if file
+                .metadata()
+                .map_err(|error| error.to_string())?
+                .file_attributes()
+                & FILE_ATTRIBUTE_REPARSE_POINT
+                != 0
+            {
+                return Err("destination lock is a reparse point".into());
+            }
+        }
+        Ok(Self {
+            _file: file,
+            #[cfg(not(windows))]
+            path,
+        })
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for DestinationLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+// Faults and fake ownership/recovery locations exist only in the unit-test binary.
+#[cfg(test)]
+#[derive(Default)]
+struct TestHooks {
+    faults: BTreeMap<&'static str, usize>,
+    owner_dest: Option<PathBuf>,
+    owner: Option<String>,
+    recovery: Option<PathBuf>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_HOOKS: std::cell::RefCell<TestHooks> = std::cell::RefCell::new(TestHooks::default());
+}
+
+fn fault(_point: &str) -> io::Result<()> {
+    #[cfg(test)]
+    return TEST_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        if let Some(count) = hooks.faults.get_mut(_point) {
+            if *count > 0 {
+                *count -= 1;
+            } else {
+                hooks.faults.remove(_point);
+                return Err(io::Error::other(format!("injected {_point} failure")));
+            }
+        }
+        Ok(())
+    });
+    #[cfg(not(test))]
+    Ok(())
 }
 
 fn main() {
@@ -164,7 +293,7 @@ fn comparable_path(path: &Path) -> String {
 /// which Burn skips when a republished bundle ships an already installed
 /// package -- has to keep the record in step with the on-disk marker.
 #[cfg(windows)]
-fn set_owner_record(dest: &Path, owner: &str) -> Result<(), String> {
+fn set_owner_record_native(dest: &Path, owner: &str) -> Result<(), String> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
@@ -174,6 +303,7 @@ fn set_owner_record(dest: &Path, owner: &str) -> Result<(), String> {
     if !manages_owner_record(dest) {
         return Ok(());
     }
+    require_native_registry_access()?;
     let path = wide(OWNER_KEY);
     let name = wide(OWNER_VALUE);
     let value = wide(owner);
@@ -214,7 +344,7 @@ fn set_owner_record(dest: &Path, owner: &str) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn clear_owner_record(dest: &Path, owner: &str) -> Result<(), String> {
+fn clear_owner_record_native(dest: &Path, owner: &str) -> Result<(), String> {
     use windows_sys::Win32::Foundation::{
         ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
     };
@@ -226,6 +356,7 @@ fn clear_owner_record(dest: &Path, owner: &str) -> Result<(), String> {
     if !manages_owner_record(dest) {
         return Ok(());
     }
+    require_native_registry_access()?;
     let path = wide(OWNER_KEY);
     let name = wide(OWNER_VALUE);
     let expected = wide(owner);
@@ -293,14 +424,147 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
 }
 
-#[cfg(not(windows))]
-fn set_owner_record(_dest: &Path, _owner: &str) -> Result<(), String> {
+#[cfg(windows)]
+fn require_native_registry_access() -> Result<(), String> {
+    #[cfg(test)]
+    return Err(
+        "unit tests require an injected ownership record; native HKCU access is forbidden".into(),
+    );
+    #[cfg(not(test))]
     Ok(())
 }
 
 #[cfg(not(windows))]
-fn clear_owner_record(_dest: &Path, _owner: &str) -> Result<(), String> {
+fn set_owner_record_native(_dest: &Path, _owner: &str) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn clear_owner_record_native(_dest: &Path, _owner: &str) -> Result<(), String> {
+    Ok(())
+}
+
+fn set_owner_record(dest: &Path, owner: &str) -> Result<(), String> {
+    fault("registry-write").map_err(|error| error.to_string())?;
+    #[cfg(test)]
+    let mocked = TEST_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        if hooks.owner_dest.as_deref() == Some(dest) {
+            hooks.owner = Some(owner.to_owned());
+            true
+        } else {
+            false
+        }
+    });
+    #[cfg(not(test))]
+    let mocked = false;
+    if !mocked {
+        set_owner_record_native(dest, owner)?;
+    }
+    fault("registry-write-after").map_err(|error| error.to_string())
+}
+
+fn clear_owner_record(dest: &Path, owner: &str) -> Result<(), String> {
+    fault("registry-clear").map_err(|error| error.to_string())?;
+    #[cfg(test)]
+    if TEST_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        if hooks.owner_dest.as_deref() == Some(dest) {
+            if hooks.owner.as_deref() == Some(owner) {
+                hooks.owner = None;
+            }
+            true
+        } else {
+            false
+        }
+    }) {
+        return Ok(());
+    }
+    clear_owner_record_native(dest, owner)
+}
+
+fn get_owner_record(dest: &Path) -> Result<Option<String>, String> {
+    #[cfg(test)]
+    if let Some(record) = TEST_HOOKS.with(|hooks| {
+        let hooks = hooks.borrow();
+        (hooks.owner_dest.as_deref() == Some(dest)).then(|| hooks.owner.clone())
+    }) {
+        return Ok(record);
+    }
+    get_owner_record_native(dest)
+}
+
+#[cfg(not(windows))]
+fn get_owner_record_native(_dest: &Path) -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+#[cfg(windows)]
+fn get_owner_record_native(dest: &Path) -> Result<Option<String>, String> {
+    use windows_sys::Win32::Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
+    };
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
+        REG_SZ,
+    };
+    if !manages_owner_record(dest) {
+        return Ok(None);
+    }
+    require_native_registry_access()?;
+    let mut key: HKEY = std::ptr::null_mut();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide(OWNER_KEY).as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND {
+        return Ok(None);
+    }
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "cannot read previous payload owner: {}",
+            io::Error::from_raw_os_error(status as i32)
+        ));
+    }
+    let mut value = [0u16; 130];
+    let mut kind = 0;
+    let mut bytes = (value.len() * 2) as u32;
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            wide(OWNER_VALUE).as_ptr(),
+            std::ptr::null(),
+            &mut kind,
+            value.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    unsafe { RegCloseKey(key) };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    if status != ERROR_SUCCESS || kind != REG_SZ || !bytes.is_multiple_of(2) {
+        return Err("cannot safely read previous payload ownership record".into());
+    }
+    let value = &value[..bytes as usize / 2];
+    let end = value
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(value.len());
+    let text = String::from_utf16(&value[..end]).map_err(|error| error.to_string())?;
+    Ok(Some(text))
+}
+
+fn restore_owner_record(dest: &Path, previous: Option<&str>, incoming: &str) -> Result<(), String> {
+    match previous {
+        Some(previous) => set_owner_record(dest, previous),
+        None => clear_owner_record(dest, incoming),
+    }
 }
 
 fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), String> {
@@ -308,39 +572,60 @@ fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), Stri
     if let Some(owner) = owner {
         validate_owner(owner)?;
     }
+    let _lock = DestinationLock::acquire(dest)?;
+    validate_destination_path(dest)?;
     if !zip_path.is_file() {
         return Err(format!("Ghidra zip not found: {}", zip_path.display()));
     }
     let hash = hash_file(zip_path).map_err(|error| format!("cannot hash zip: {error}"))?;
-    let marker_path = dest.join(MARKER_NAME);
-
-    if is_directory(dest) {
-        if let Some(marker) = read_marker(&marker_path) {
-            if marker.hash.eq_ignore_ascii_case(&hash) {
-                if let Some(owner) = owner {
-                    if marker.owner.as_deref() != Some(owner) {
-                        write_marker_atomically(
-                            dest,
-                            &Marker {
-                                hash,
-                                owner: Some(owner.to_owned()),
-                            },
-                        )
-                        .map_err(|error| format!("cannot update ownership marker: {error}"))?;
-                    }
-                    set_owner_record(dest, owner)?;
-                }
-                println!(
-                    "Ghidra already extracted at {} (unchanged); skipping.",
-                    dest.display()
-                );
-                return Ok(());
-            }
-        }
+    let previous_marker = read_marker(&dest.join(MARKER_NAME));
+    let unchanged = previous_marker
+        .as_ref()
+        .is_some_and(|marker| marker.hash.eq_ignore_ascii_case(&hash));
+    if unchanged && read_inventory(dest, &hash).is_ok() {
+        return adopt(dest, owner, None);
     }
+    let ready = stage_archive(zip_path, dest, &hash, owner)?;
+    if unchanged {
+        let inventory = fs::read(ready.join(INVENTORY_NAME)).map_err(|error| error.to_string());
+        let result = match inventory {
+            Ok(inventory) => adopt(dest, owner, Some(&inventory)),
+            Err(error) => Err(error),
+        };
+        return match result {
+            Ok(()) => {
+                if let Err(error) = fault("adoption-cleanup")
+                    .map_err(|error| error.to_string())
+                    .and_then(|()| cleanup_if_exists(&ready))
+                {
+                    eprintln!(
+                        "WARNING: adoption committed, but staging cleanup failed; residual staging at {}: {error}",
+                        ready.display()
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => Err(append_cleanup(error, cleanup_if_exists(&ready))),
+        };
+    }
+    let result = replace_destination(dest, &ready, previous_marker.as_ref(), owner);
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => Err(append_cleanup(error, cleanup_if_exists(&ready))),
+    }
+}
 
+fn stage_archive(
+    zip_path: &Path,
+    dest: &Path,
+    hash: &str,
+    owner: Option<&str>,
+) -> Result<PathBuf, String> {
     let mut archive = File::open(zip_path)
         .map_err(|error| format!("cannot open zip {}: {error}", zip_path.display()))?;
+    if hash_reader(&mut archive).map_err(|error| error.to_string())? != hash {
+        return Err("source ZIP changed before extraction".into());
+    }
     let mut zip = ZipArchive::new(&mut archive)
         .map_err(|error| format!("cannot read zip {}: {error}", zip_path.display()))?;
     let external_attributes = read_central_directory_attributes(zip_path)
@@ -350,6 +635,23 @@ fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), Stri
     }
     let entries = validate_archive(&mut zip, &external_attributes)?;
     let flatten_root = flatten_root(&entries);
+    for entry in &entries {
+        let offset = usize::from(flatten_root.is_some());
+        if entry
+            .components
+            .first()
+            .is_some_and(|name| metadata_name(name))
+            || entry
+                .components
+                .get(offset)
+                .is_some_and(|name| metadata_name(name))
+        {
+            return Err(format!(
+                "archive collides with helper-owned metadata: {}",
+                entry.path.display()
+            ));
+        }
+    }
     let parent = sibling_parent(dest);
     fs::create_dir_all(parent).map_err(|error| {
         format!(
@@ -365,6 +667,9 @@ fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), Stri
         for entry in &entries {
             extract_entry(&mut zip, entry, &stage)
                 .map_err(|error| format!("cannot extract {}: {error}", entry.path.display()))?;
+        }
+        if hash_file(zip_path).map_err(|error| error.to_string())? != hash {
+            return Err("source ZIP changed during extraction".into());
         }
 
         let ready = if let Some(root) = flatten_root {
@@ -384,10 +689,21 @@ fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), Stri
             stage.clone()
         };
 
+        // Establish the upstream baseline before importing any user additions.
+        let inventory = Inventory {
+            source: hash.to_owned(),
+            tree: scan_tree(&ready, false)?,
+        };
+        write_bytes_atomically(
+            &ready,
+            INVENTORY_NAME,
+            inventory_text(&inventory).as_bytes(),
+        )
+        .map_err(|error| format!("cannot write inventory: {error}"))?;
         write_marker_atomically(
             &ready,
             &Marker {
-                hash: hash.clone(),
+                hash: hash.to_owned(),
                 owner: owner.map(str::to_owned),
             },
         )
@@ -396,55 +712,105 @@ fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), Stri
         Ok(ready)
     })();
 
-    let ready = match operation {
-        Ok(result) => result,
+    match operation {
+        Ok(result) => Ok(result),
         Err(error) => {
             let mut message = append_cleanup(error, cleanup_if_exists(&stage));
             if let Some(ready) = additional_staging {
                 message = append_cleanup(message, cleanup_if_exists(&ready));
             }
-            return Err(message);
+            Err(message)
         }
-    };
+    }
+}
 
-    let dest_metadata = match fs::symlink_metadata(dest) {
-        Ok(metadata) => {
-            let reparse = match is_reparse_point(dest) {
-                Ok(reparse) => reparse,
-                Err(error) => {
-                    let cleanup = cleanup_if_exists(&ready);
-                    return Err(append_cleanup(
-                        format!("cannot inspect destination reparse status: {error}"),
-                        cleanup,
-                    ));
-                }
-            };
-            if !metadata.is_dir() || reparse {
-                let cleanup = cleanup_if_exists(&ready);
-                return Err(append_cleanup(
-                    format!("destination is not a normal directory: {}", dest.display()),
-                    cleanup,
-                ));
-            }
-            true
+fn adopt(dest: &Path, owner: Option<&str>, inventory: Option<&[u8]>) -> Result<(), String> {
+    let old = snapshot_metadata(dest)?;
+    let previous_owner = if owner.is_some() {
+        get_owner_record(dest)?
+    } else {
+        None
+    };
+    let operation = (|| {
+        if let Some(inventory) = inventory {
+            write_bytes_atomically(dest, INVENTORY_NAME, inventory)
+                .map_err(|error| error.to_string())?;
         }
+        if let Some(owner) = owner {
+            let mut marker = read_marker(&dest.join(MARKER_NAME))
+                .ok_or("source marker disappeared during adoption")?;
+            marker.hash.make_ascii_lowercase();
+            marker.owner = Some(owner.to_owned());
+            write_marker_atomically(dest, &marker).map_err(|error| error.to_string())?;
+        }
+        if marker_is_present(&dest.join(REMOVAL_NAME)) {
+            remove_tree_no_follow(&dest.join(REMOVAL_NAME)).map_err(|error| error.to_string())?;
+        }
+        if let Some(owner) = owner {
+            set_owner_record(dest, owner)?;
+        }
+        Ok::<(), String>(())
+    })();
+    if let Err(mut error) = operation {
+        error = append_cleanup(error, restore_metadata(dest, &old));
+        if let Some(owner) = owner {
+            error = append_cleanup(
+                error,
+                restore_owner_record(dest, previous_owner.as_deref(), owner),
+            );
+        }
+        return Err(error);
+    }
+    println!(
+        "Ghidra already extracted at {} (unchanged); skipping.",
+        dest.display()
+    );
+    Ok(())
+}
+
+fn replace_destination(
+    dest: &Path,
+    ready: &Path,
+    previous_marker: Option<&Marker>,
+    owner: Option<&str>,
+) -> Result<(), String> {
+    let parent = sibling_parent(dest);
+    let previous_owner = if owner.is_some() {
+        get_owner_record(dest)?
+    } else {
+        None
+    };
+    let exists = match fs::symlink_metadata(dest) {
+        Ok(_) => true,
         Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => {
-            let cleanup = cleanup_if_exists(&ready);
-            return Err(append_cleanup(
-                format!("cannot inspect destination {}: {error}", dest.display()),
-                cleanup,
-            ));
-        }
+        Err(error) => return Err(format!("cannot inspect destination: {error}")),
     };
-
-    let backup = if dest_metadata {
+    if exists {
+        validate_destination_path(dest)?;
+        let inventory = previous_marker.and_then(|marker| read_inventory(dest, &marker.hash).ok());
+        let current = scan_tree(dest, false)?;
+        let customized = inventory
+            .as_ref()
+            .is_none_or(|inventory| inventory.tree != current);
+        if customized {
+            let new_marker =
+                read_marker(&ready.join(MARKER_NAME)).ok_or("missing staged source marker")?;
+            preserve_tree(
+                dest,
+                previous_marker.map(|marker| marker.hash.as_str()),
+                &new_marker.hash,
+            )?;
+            if let Some(inventory) = inventory {
+                let upstream = read_inventory(ready, &new_marker.hash)?;
+                migrate_additions(dest, ready, &inventory.tree, &current, &upstream.tree)?;
+            }
+        }
+    }
+    let backup = if exists {
         let backup = unique_sibling_path(parent, dest, "old");
         if let Err(error) = fs::rename(dest, &backup) {
-            let cleanup = cleanup_if_exists(&ready);
-            return Err(append_cleanup(
-                format!("cannot move existing destination to backup: {error}"),
-                cleanup,
+            return Err(format!(
+                "cannot move existing destination to backup: {error}"
             ));
         }
         Some(backup)
@@ -452,10 +818,10 @@ fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), Stri
         None
     };
 
-    if let Err(error) = fs::rename(&ready, dest) {
+    if let Err(error) = fault("install").and_then(|()| fs::rename(ready, dest)) {
         let mut message = format!("cannot install extracted Ghidra directory: {error}");
         if let Some(backup) = &backup {
-            match fs::rename(backup, dest) {
+            match fault("rollback").and_then(|()| fs::rename(backup, dest)) {
                 Ok(()) => {}
                 Err(restore_error) => {
                     message.push_str(&format!(
@@ -465,20 +831,54 @@ fn extract(zip_path: &Path, dest: &Path, owner: Option<&str>) -> Result<(), Stri
                 }
             }
         }
-        let cleanup = cleanup_if_exists(&ready);
-        return Err(append_cleanup(message, cleanup));
+        return Err(message);
     }
 
-    if let Some(backup) = backup {
-        remove_tree_no_follow(&backup).map_err(|error| {
-            format!(
-                "extraction succeeded but backup cleanup failed at {}: {error}",
-                backup.display()
-            )
-        })?;
-    }
     if let Some(owner) = owner {
-        set_owner_record(dest, owner)?;
+        if let Err(mut error) = set_owner_record(dest, owner) {
+            let displaced = unique_sibling_path(parent, dest, "uncommitted");
+            let rollback = fault("rollback").and_then(|()| fs::rename(dest, &displaced));
+            match rollback {
+                Ok(()) => {
+                    if let Some(backup) = &backup {
+                        if let Err(restore_error) = fs::rename(backup, dest) {
+                            error.push_str(&format!("; rollback failed; original remains at {}, uncommitted tree at {}: {restore_error}", backup.display(), displaced.display()));
+                        } else {
+                            error = append_cleanup(error, cleanup_if_exists(&displaced));
+                        }
+                    } else {
+                        error = append_cleanup(error, cleanup_if_exists(&displaced));
+                    }
+                }
+                Err(restore_error) => {
+                    if let Some(backup) = &backup {
+                        error.push_str(&format!(
+                            "; rollback failed; original remains at {}, uncommitted tree at {}: {restore_error}",
+                            backup.display(), dest.display()
+                        ));
+                    } else {
+                        error.push_str(&format!(
+                            "; rollback failed; no previous destination; uncommitted tree remains at {}: {restore_error}",
+                            dest.display()
+                        ));
+                    }
+                }
+            }
+            error = append_cleanup(
+                error,
+                restore_owner_record(dest, previous_owner.as_deref(), owner),
+            );
+            return Err(error);
+        }
+    }
+    // Ownership is committed before fallible cleanup. Never roll back a committed tree.
+    if let Some(backup) = backup {
+        if let Err(error) = fault("cleanup").and_then(|()| remove_tree_no_follow(&backup)) {
+            eprintln!(
+                "WARNING: extraction committed, but backup cleanup failed; residual backup at {}: {error}",
+                backup.display()
+            );
+        }
     }
     println!("Extracted Ghidra to {}.", dest.display());
     Ok(())
@@ -489,9 +889,16 @@ fn remove(dest: &Path, zip_path: Option<&Path>, owner: Option<&str>) -> Result<(
     if let Some(owner) = owner {
         validate_owner(owner)?;
     }
+    let _lock = DestinationLock::acquire(dest)?;
+    validate_destination_path(dest)?;
     let metadata = match fs::symlink_metadata(dest) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(owner) = owner {
+                clear_owner_record(dest, owner)?;
+            }
+            return Ok(());
+        }
         Err(error) => {
             return Err(format!(
                 "cannot inspect destination {}: {error}",
@@ -508,23 +915,10 @@ fn remove(dest: &Path, zip_path: Option<&Path>, owner: Option<&str>) -> Result<(
 
     let marker = read_marker(&dest.join(MARKER_NAME));
     let Some(marker) = marker else {
-        if zip_path.is_some() || owner.is_some() {
-            println!(
-                "Skipping removal of {}; package marker is unavailable.",
-                dest.display()
-            );
-            return Ok(());
-        }
-        if marker_is_present(&dest.join(MARKER_NAME)) {
-            println!(
-                "Skipping removal of {}; its package marker is invalid.",
-                dest.display()
-            );
-            return Ok(());
-        }
-        remove_tree_no_follow(dest)
-            .map_err(|error| format!("cannot remove {}: {error}", dest.display()))?;
-        println!("Removed {}.", dest.display());
+        println!(
+            "Retained {}; package marker is unavailable or invalid.",
+            dest.display()
+        );
         return Ok(());
     };
 
@@ -563,8 +957,59 @@ fn remove(dest: &Path, zip_path: Option<&Path>, owner: Option<&str>) -> Result<(
         }
     }
 
-    remove_tree_no_follow(dest)
-        .map_err(|error| format!("cannot remove {}: {error}", dest.display()))?;
+    let classification = (|| {
+        let inventory = read_inventory(dest, &marker.hash)?;
+        let current = scan_tree(dest, false)?;
+        let removal =
+            read_regular_bytes(&dest.join(REMOVAL_NAME)).map_err(|error| error.to_string())?;
+        let retry = match removal {
+            Some(bytes) if bytes == removal_text(&marker).as_bytes() => true,
+            Some(_) => return Err("invalid or mismatched removal state".to_owned()),
+            None => false,
+        };
+        if tree_is_clean(&inventory.tree, &current, retry) {
+            Ok(())
+        } else {
+            Err("user additions, edits, or missing packaged files".into())
+        }
+    })();
+    if let Err(reason) = classification {
+        println!("Retained {}: {reason}.", dest.display());
+        if let Some(owner) = owner {
+            clear_owner_record(dest, owner)?;
+        }
+        return Ok(());
+    }
+    write_bytes_atomically(dest, REMOVAL_NAME, removal_text(&marker).as_bytes())
+        .map_err(|error| format!("cannot authorize retry-safe removal: {error}"))?;
+    let metadata = snapshot_metadata(dest)?;
+    for entry in fs::read_dir(dest).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !metadata_name(&entry.file_name().to_string_lossy()) {
+            remove_payload_no_follow(&entry.path()).map_err(|error| {
+                format!(
+                    "cannot remove {}; authorization retained for retry: {error}",
+                    dest.display()
+                )
+            })?;
+        }
+    }
+    let finalization = (|| {
+        for name in METADATA_NAMES {
+            remove_tree_no_follow(&dest.join(name))?;
+        }
+        fault("remove-final")?;
+        fs::remove_dir(dest)
+    })();
+    if let Err(error) = finalization {
+        return Err(append_cleanup(
+            format!(
+                "cannot finish removal of {}; authorization restored for retry: {error}",
+                dest.display()
+            ),
+            restore_metadata(dest, &metadata),
+        ));
+    }
     if let Some(owner) = owner {
         clear_owner_record(dest, owner)?;
     }
@@ -572,22 +1017,428 @@ fn remove(dest: &Path, zip_path: Option<&Path>, owner: Option<&str>) -> Result<(
     Ok(())
 }
 
+fn metadata_name(name: &str) -> bool {
+    METADATA_NAMES
+        .iter()
+        .any(|metadata| name.eq_ignore_ascii_case(metadata))
+}
+
+fn valid_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn relative_path(name: &str) -> PathBuf {
+    name.split('/').collect()
+}
+
+fn scan_tree(root: &Path, include_metadata: bool) -> Result<Tree, String> {
+    fn walk(
+        root: &Path,
+        prefix: &str,
+        include_metadata: bool,
+        tree: &mut Tree,
+    ) -> Result<(), String> {
+        let mut metadata_keys = BTreeSet::new();
+        for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "non-Unicode tree path")?;
+            if prefix.is_empty() && !include_metadata && metadata_name(&name) {
+                if !metadata_keys.insert(name.to_ascii_lowercase()) {
+                    return Err(format!("case-conflicting helper metadata: {name}"));
+                }
+                continue;
+            }
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+            if is_reparse_point(&path).map_err(|error| error.to_string())? {
+                return Err(format!(
+                    "cannot classify or preserve reparse point: {}",
+                    path.display()
+                ));
+            }
+            let relative = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            validate_zip_path(&relative, metadata.is_dir())?;
+            let item = if metadata.is_dir() {
+                Item::Directory
+            } else if metadata.is_file() {
+                Item::File(
+                    hash_file(&path)
+                        .map_err(|error| format!("cannot hash {}: {error}", path.display()))?,
+                )
+            } else {
+                return Err(format!("cannot classify special file: {}", path.display()));
+            };
+            tree.insert(relative.clone(), item);
+            if metadata.is_dir() {
+                walk(&path, &relative, include_metadata, tree)?;
+            }
+        }
+        Ok(())
+    }
+    let mut tree = Tree::new();
+    walk(root, "", include_metadata, &mut tree)?;
+    validate_tree(&tree, include_metadata)?;
+    Ok(tree)
+}
+
+fn validate_tree(tree: &Tree, allow_metadata: bool) -> Result<(), String> {
+    let mut keys = BTreeSet::new();
+    for (name, item) in tree {
+        let components = validate_zip_path(name, matches!(item, Item::Directory))?;
+        if components.join("/") != *name || (!allow_metadata && metadata_name(&components[0])) {
+            return Err(format!("unsafe or reserved inventory path: {name}"));
+        }
+        if !keys.insert(name.to_lowercase()) {
+            return Err(format!("case-conflicting inventory path: {name}"));
+        }
+        let mut parent = name.as_str();
+        while let Some((prefix, _)) = parent.rsplit_once('/') {
+            if tree.get(prefix) != Some(&Item::Directory) {
+                return Err(format!(
+                    "missing or conflicting inventory directory: {prefix}"
+                ));
+            }
+            parent = prefix;
+        }
+    }
+    Ok(())
+}
+
+fn inventory_text(inventory: &Inventory) -> String {
+    let mut text = format!("ghidralaunch-inventory-v1\nsource={}\n", inventory.source);
+    for (name, item) in &inventory.tree {
+        match item {
+            Item::Directory => text.push_str(&format!("d\t-\t{name}\n")),
+            Item::File(hash) => text.push_str(&format!("f\t{hash}\t{name}\n")),
+        }
+    }
+    text
+}
+
+fn parse_inventory(text: &str, source: &str) -> Result<Inventory, String> {
+    let mut lines = text.split_terminator('\n');
+    if lines.next() != Some("ghidralaunch-inventory-v1") {
+        return Err("unavailable or invalid inventory version".into());
+    }
+    let hash = lines
+        .next()
+        .and_then(|line| line.strip_prefix("source="))
+        .filter(|hash| valid_hash(hash) && hash.eq_ignore_ascii_case(source))
+        .ok_or("invalid inventory source")?;
+    let mut tree = Tree::new();
+    for line in lines {
+        let mut fields = line.split('\t');
+        let kind = fields.next().ok_or("missing inventory kind")?;
+        let digest = fields.next().ok_or("missing inventory digest")?;
+        let name = fields.next().ok_or("missing inventory path")?;
+        if fields.next().is_some() {
+            return Err("invalid inventory record".into());
+        }
+        let item = match kind {
+            "d" if digest == "-" => Item::Directory,
+            "f" if valid_hash(digest) => Item::File(digest.to_owned()),
+            _ => return Err("invalid inventory record".into()),
+        };
+        let name = validate_zip_path(name, matches!(item, Item::Directory))?.join("/");
+        if tree.insert(name, item).is_some() {
+            return Err("duplicate inventory record".into());
+        }
+    }
+    validate_tree(&tree, false)?;
+    Ok(Inventory {
+        source: hash.to_owned(),
+        tree,
+    })
+}
+
+fn read_inventory(dest: &Path, source: &str) -> Result<Inventory, String> {
+    let bytes = read_regular_bytes(&dest.join(INVENTORY_NAME))
+        .map_err(|error| format!("cannot read inventory: {error}"))?
+        .ok_or("upstream inventory is unavailable")?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "inventory is not UTF-8")?;
+    parse_inventory(text, source)
+}
+
+fn tree_is_clean(upstream: &Tree, current: &Tree, allow_missing: bool) -> bool {
+    current
+        .iter()
+        .all(|(name, item)| upstream.get(name) == Some(item))
+        && (allow_missing || upstream.len() == current.len())
+}
+
+fn removal_text(marker: &Marker) -> String {
+    format!(
+        "ghidralaunch-removal-v1\nsource={}\nowner={}\n",
+        marker.hash.to_lowercase(),
+        marker.owner.as_deref().unwrap_or("")
+    )
+}
+
+type MetadataSnapshot = Vec<(&'static str, Option<Vec<u8>>)>;
+
+fn read_regular_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_file() || is_reparse_point(path)? {
+        return Err(io::Error::other(format!(
+            "not an ordinary metadata file: {}",
+            path.display()
+        )));
+    }
+    fs::read(path).map(Some)
+}
+
+fn snapshot_metadata(dest: &Path) -> Result<MetadataSnapshot, String> {
+    METADATA_NAMES
+        .into_iter()
+        .map(|name| {
+            read_regular_bytes(&dest.join(name))
+                .map(|bytes| (name, bytes))
+                .map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
+fn restore_metadata(dest: &Path, snapshot: &MetadataSnapshot) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for (name, bytes) in snapshot {
+        let result = match bytes {
+            Some(bytes) => write_bytes_atomically(dest, name, bytes),
+            None => remove_tree_no_follow(&dest.join(name)),
+        };
+        if let Err(error) = result {
+            errors.push(format!(
+                "cannot restore metadata {}: {error}",
+                dest.join(name).display()
+            ));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn write_bytes_atomically(directory: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    let temporary = unique_sibling_path(directory, Path::new(name), "metadata");
+    let operation = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        atomic_replace(&temporary, &directory.join(name))
+    })();
+    if let Err(error) = operation {
+        return Err(io::Error::new(
+            error.kind(),
+            append_cleanup(error.to_string(), cleanup_if_exists(&temporary)),
+        ));
+    }
+    Ok(())
+}
+
+fn recovery_root() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(root) = TEST_HOOKS.with(|hooks| hooks.borrow().recovery.clone()) {
+        return Ok(root);
+    }
+    #[cfg(windows)]
+    {
+        env::var_os("LOCALAPPDATA")
+            .filter(|root| !root.is_empty())
+            .map(|root| PathBuf::from(root).join("Ghidra Launch Recovery"))
+            .ok_or_else(|| "LOCALAPPDATA is unavailable; cannot preserve the previous tree".into())
+    }
+    #[cfg(not(windows))]
+    Err("recovery requires LOCALAPPDATA on Windows".into())
+}
+
+fn copy_ordinary_file(source: &Path, target: &Path, expected: &str) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || is_reparse_point(source).map_err(|error| error.to_string())? {
+        return Err(format!("cannot safely copy {}", source.display()));
+    }
+    reject_reparse_ancestors(sibling_parent(source))?;
+    reject_reparse_ancestors(sibling_parent(target))?;
+    let mut input = File::open(source).map_err(|error| error.to_string())?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(|error| format!("cannot create preserved file {}: {error}", target.display()))?;
+    io::copy(&mut input, &mut output)
+        .and_then(|_| output.sync_all())
+        .map_err(|error| format!("cannot copy {}: {error}", source.display()))?;
+    drop(output);
+    if hash_file(target).map_err(|error| error.to_string())? != expected
+        || hash_file(source).map_err(|error| error.to_string())? != expected
+    {
+        return Err(format!(
+            "file changed while preserving {}",
+            source.display()
+        ));
+    }
+    fs::set_permissions(target, metadata.permissions()).map_err(|error| error.to_string())
+}
+
+fn preserve_tree(
+    dest: &Path,
+    previous_source: Option<&str>,
+    incoming_source: &str,
+) -> Result<PathBuf, String> {
+    fault("recovery").map_err(|error| error.to_string())?;
+    let before = scan_tree(dest, true)?;
+    let root = recovery_root()?;
+    #[cfg(windows)]
+    if comparable_path(&root) == comparable_path(dest)
+        || comparable_path(&root).starts_with(&(comparable_path(dest) + "\\"))
+    {
+        return Err("recovery root cannot be inside the destination".into());
+    }
+    #[cfg(not(windows))]
+    if root.starts_with(dest) {
+        return Err("recovery root cannot be inside the destination".into());
+    }
+    reject_reparse_ancestors(&root)?;
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("cannot create recovery root {}: {error}", root.display()))?;
+    reject_reparse_ancestors(&root)?;
+    let recovery = create_unique_directory(&root, dest, "recovery")
+        .map_err(|error| format!("cannot allocate recovery directory: {error}"))?;
+    let tree = recovery.join("tree");
+    fs::create_dir(&tree).map_err(|error| format!("cannot create recovery tree: {error}"))?;
+    let operation = (|| {
+        for (name, item) in &before {
+            let target = tree.join(relative_path(name));
+            match item {
+                Item::Directory => fs::create_dir(&target).map_err(|error| error.to_string())?,
+                Item::File(hash) => {
+                    fault("recovery-copy").map_err(|error| error.to_string())?;
+                    copy_ordinary_file(&dest.join(relative_path(name)), &target, hash)?
+                }
+            }
+        }
+        if scan_tree(dest, true)? != before || scan_tree(&tree, true)? != before {
+            return Err("previous tree changed while preserving it".into());
+        }
+        let summary = format!(
+            "ghidralaunch-recovery-v1\ndestination={}\nprevious-source={}\nincoming-source={incoming_source}\ncontents=tree\n",
+            dest.display(), previous_source.unwrap_or("unknown")
+        );
+        write_bytes_atomically(&recovery, "recovery.txt", summary.as_bytes())
+            .map_err(|error| format!("cannot record recovery summary: {error}"))?;
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = operation {
+        return Err(format!("cannot preserve previous tree; original remains at {}; incomplete recovery at {}: {error}", dest.display(), recovery.display()));
+    }
+    println!("Preserved previous tree at {}.", recovery.display());
+    Ok(recovery)
+}
+
+fn migrate_additions(
+    source: &Path,
+    ready: &Path,
+    old: &Tree,
+    current: &Tree,
+    upstream: &Tree,
+) -> Result<(), String> {
+    let upstream_keys: BTreeMap<_, _> = upstream
+        .iter()
+        .map(|(name, item)| (name.to_lowercase(), (name, item)))
+        .collect();
+    let additions: BTreeSet<_> = current
+        .keys()
+        .filter(|name| !old.contains_key(*name))
+        .collect();
+    for name in &additions {
+        let mut candidate = name.as_str();
+        let mut safe = true;
+        loop {
+            if let Some((canonical, item)) = upstream_keys.get(&candidate.to_lowercase()) {
+                if canonical.as_str() != candidate
+                    || !matches!(item, Item::Directory)
+                    || (candidate == name.as_str() && !matches!(current[*name], Item::Directory))
+                {
+                    safe = false;
+                    break;
+                }
+            }
+            match candidate.rsplit_once('/') {
+                Some((parent, _)) => candidate = parent,
+                None => break,
+            }
+        }
+        if !safe {
+            continue;
+        }
+        let target = ready.join(relative_path(name));
+        match &current[*name] {
+            Item::Directory => {
+                reject_reparse_ancestors(&target)?;
+                fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+            }
+            Item::File(hash) => {
+                reject_reparse_ancestors(sibling_parent(&target))?;
+                fs::create_dir_all(sibling_parent(&target)).map_err(|error| error.to_string())?;
+                copy_ordinary_file(&source.join(relative_path(name)), &target, hash)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remove_payload_no_follow(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if is_reparse_point(path)? || (!metadata.is_dir() && !metadata.is_file()) {
+        return Err(io::Error::other(
+            "payload changed to a reparse point or special file",
+        ));
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            remove_payload_no_follow(&entry?.path())?;
+        }
+        fs::remove_dir(path)
+    } else {
+        fault("remove-payload")?;
+        remove_tree_no_follow(path)
+    }
+}
+
 fn validate_archive<R: Read + io::Seek>(
     zip: &mut ZipArchive<R>,
-    external_attributes: &[u32],
+    external_attributes: &[CentralEntry],
 ) -> Result<Vec<Entry>, String> {
     let mut entries = Vec::with_capacity(zip.len());
     let mut explicit = BTreeSet::new();
     let mut types: BTreeMap<String, bool> = BTreeMap::new();
     let mut canonical_dirs: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
-    for (index, attributes) in external_attributes.iter().enumerate().take(zip.len()) {
+    for (index, central) in external_attributes.iter().enumerate().take(zip.len()) {
         let file = zip
             .by_index(index)
             .map_err(|error| format!("cannot inspect zip entry {index}: {error}"))?;
         let unix_type = file.unix_mode().unwrap_or(0) & 0o170000;
         if file.is_symlink()
-            || attributes & 0x0400 != 0
+            || central.attributes & 0x0400 != 0
             || (unix_type != 0 && !matches!(unix_type, 0o100000 | 0o040000))
         {
             return Err(format!(
@@ -595,14 +1446,13 @@ fn validate_archive<R: Read + io::Seek>(
                 file.name()
             ));
         }
-        let raw_name = std::str::from_utf8(file.name_raw())
-            .map_err(|_| format!("archive entry name is not UTF-8: {}", file.name()))?;
+        let raw_name = decode_zip_name(file.name_raw(), central.flags)?;
         let is_dir = file.is_dir()
             || raw_name.ends_with('\\')
             || file
                 .unix_mode()
                 .is_some_and(|mode| mode & 0o170000 == 0o040000);
-        let original_components = validate_zip_path(raw_name, is_dir)?;
+        let original_components = validate_zip_path(&raw_name, is_dir)?;
         let mut components = Vec::with_capacity(original_components.len());
         let mut keys = Vec::with_capacity(original_components.len());
 
@@ -721,6 +1571,35 @@ fn validate_zip_path(name: &str, is_dir: bool) -> Result<Vec<String>, String> {
     Ok(result)
 }
 
+fn decode_zip_name(bytes: &[u8], flags: u16) -> Result<String, String> {
+    if flags & 0x0800 != 0 {
+        return std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|_| "flagged ZIP entry name is not valid UTF-8".into());
+    }
+    const CP437: &str = concat!(
+        "ÇüéâäàåçêëèïîìÄÅ",
+        "ÉæÆôöòûùÿÖÜ¢£¥₧ƒ",
+        "áíóúñÑªº¿⌐¬½¼¡«»",
+        "░▒▓│┤╡╢╖╕╣║╗╝╜╛┐",
+        "└┴┬├─┼╞╟╚╔╩╦╠═╬╧",
+        "╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀",
+        "αßΓπΣσµτΦΘΩδ∞φε∩",
+        "≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\u{a0}"
+    );
+    let high: Vec<char> = CP437.chars().collect();
+    Ok(bytes
+        .iter()
+        .map(|byte| {
+            if *byte < 128 {
+                char::from(*byte)
+            } else {
+                high[usize::from(*byte - 128)]
+            }
+        })
+        .collect())
+}
+
 fn flatten_root(entries: &[Entry]) -> Option<String> {
     let first = entries.first()?.components.first()?.clone();
     if entries.iter().any(|entry| {
@@ -766,10 +1645,14 @@ fn move_directory_contents(source: &Path, destination: &Path) -> io::Result<()> 
 
 fn hash_file(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
+    hash_reader(&mut file)
+}
+
+fn hash_reader(reader: &mut impl Read) -> io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
-        let length = file.read(&mut buffer)?;
+        let length = reader.read(&mut buffer)?;
         if length == 0 {
             break;
         }
@@ -955,19 +1838,6 @@ fn reject_reparse_ancestors(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn is_directory(path: &Path) -> bool {
-    fs::symlink_metadata(path)
-        .map(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
-        .and_then(|is_dir| {
-            if is_dir {
-                is_reparse_point(path).map(|reparse| is_dir && !reparse)
-            } else {
-                Ok(false)
-            }
-        })
-        .unwrap_or(false)
-}
-
 fn cleanup_if_exists(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(_) => remove_tree_no_follow(path)
@@ -1008,6 +1878,22 @@ fn remove_tree_no_follow(path: &Path) -> io::Result<()> {
         });
     }
     if !metadata.is_dir() {
+        #[cfg(windows)]
+        if metadata.permissions().readonly() {
+            use std::os::windows::fs::MetadataExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                SetFileAttributesW, FILE_ATTRIBUTE_READONLY,
+            };
+            if unsafe {
+                SetFileAttributesW(
+                    to_wide_verbatim(path)?.as_ptr(),
+                    metadata.file_attributes() & !FILE_ATTRIBUTE_READONLY,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
         return fs::remove_file(path);
     }
     for entry in fs::read_dir(path)? {
@@ -1016,7 +1902,7 @@ fn remove_tree_no_follow(path: &Path) -> io::Result<()> {
     fs::remove_dir(path)
 }
 
-fn read_central_directory_attributes(path: &Path) -> io::Result<Vec<u32>> {
+fn read_central_directory_attributes(path: &Path) -> io::Result<Vec<CentralEntry>> {
     const EOCD_SIGNATURE: u32 = 0x0605_4b50;
     const ZIP64_LOCATOR_SIGNATURE: u32 = 0x0706_4b50;
     const ZIP64_EOCD_SIGNATURE: u32 = 0x0606_4b50;
@@ -1152,7 +2038,10 @@ fn read_central_directory_attributes(path: &Path) -> io::Result<Vec<u32>> {
         let name_length = read_u16_le(&header[28..]).unwrap() as u64;
         let extra_length = read_u16_le(&header[30..]).unwrap() as u64;
         let comment_length = read_u16_le(&header[32..]).unwrap() as u64;
-        attributes.push(read_u32_le(&header[38..]).unwrap());
+        attributes.push(CentralEntry {
+            attributes: read_u32_le(&header[38..]).unwrap(),
+            flags: read_u16_le(&header[8..]).unwrap(),
+        });
         file.seek(SeekFrom::Current(
             i64::try_from(name_length + extra_length + comment_length).map_err(|_| {
                 io::Error::new(
@@ -1389,8 +2278,741 @@ mod tests {
             .unwrap(),
             0
         );
+        assert!(destination.exists());
+        fs::remove_file(destination.join("user-data.txt")).unwrap();
+        remove(&destination, Some(&archive_path), Some("new-owner")).unwrap();
         assert!(!destination.exists());
         remove_tree_no_follow(&root).unwrap();
+    }
+
+    struct Fixture {
+        root: PathBuf,
+        dest: PathBuf,
+        first: PathBuf,
+        next: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(label: &str) -> Self {
+            let root = test_root(label);
+            fs::create_dir_all(&root).unwrap();
+            let fixture = Self {
+                dest: root.join("Ghidra"),
+                first: root.join("first.zip"),
+                next: root.join("next.zip"),
+                root,
+            };
+            write_zip(
+                &fixture.first,
+                &[("ghidra/app", "original"), ("ghidra/bin/tool", "tool")],
+            );
+            write_zip(
+                &fixture.next,
+                &[("ghidra/app", "new"), ("ghidra/bin/tool", "new tool")],
+            );
+            TEST_HOOKS.with(|hooks| {
+                *hooks.borrow_mut() = TestHooks {
+                    owner_dest: Some(fixture.dest.clone()),
+                    recovery: Some(fixture.root.join("Recovery")),
+                    ..TestHooks::default()
+                };
+            });
+            fixture
+        }
+
+        fn install(&self) {
+            extract(&self.first, &self.dest, Some("old-owner")).unwrap();
+        }
+
+        fn inject(&self, point: &'static str, after: usize) {
+            TEST_HOOKS.with(|hooks| {
+                hooks.borrow_mut().faults.insert(point, after);
+            });
+        }
+
+        fn record(&self) -> Option<String> {
+            get_owner_record(&self.dest).unwrap()
+        }
+
+        fn backups(&self) -> Vec<PathBuf> {
+            fs::read_dir(&self.root)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .contains(".old-")
+                })
+                .collect()
+        }
+
+        fn recovered(&self) -> Vec<PathBuf> {
+            match fs::read_dir(self.root.join("Recovery")) {
+                Ok(entries) => entries
+                    .map(|entry| entry.unwrap().path().join("tree"))
+                    .collect(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+                Err(error) => panic!("{error}"),
+            }
+        }
+
+        fn assert_original(&self) {
+            assert_eq!(fs::read(self.dest.join("app")).unwrap(), b"original");
+            assert_eq!(
+                read_marker(&self.dest.join(MARKER_NAME))
+                    .unwrap()
+                    .owner
+                    .as_deref(),
+                Some("old-owner")
+            );
+            assert_eq!(self.record().as_deref(), Some("old-owner"));
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            TEST_HOOKS.with(|hooks| *hooks.borrow_mut() = TestHooks::default());
+            let _ = remove_tree_no_follow(&self.root);
+        }
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, &str)]) {
+        let mut zip = ZipWriter::new(File::create(path).unwrap());
+        for (name, data) in entries {
+            zip.start_file(*name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(data.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn inventory_accepts_shared_order_but_rejects_unsafe_conflicting_records() {
+        let source = "a".repeat(64);
+        let digest = "b".repeat(64);
+        let header = format!("ghidralaunch-inventory-v1\nsource={source}\n");
+        let valid = format!("{header}f\t{digest}\tbin/tool\nd\t-\tbin\n");
+        assert_eq!(parse_inventory(&valid, &source).unwrap().tree.len(), 2);
+        for records in [
+            format!("f\t{digest}\tbin/tool\n"),
+            "d\t-\tbin\nd\t-\tBIN\n".into(),
+            "d\t-\tbin\nd\t-\tbin\n".into(),
+            format!("f\t{digest}\tbin\nd\t-\tbin/tool\n"),
+            "d\t-\t../outside\n".into(),
+            format!("f\t{digest}\t{MARKER_NAME}\n"),
+            "f\t-\tfile\n".into(),
+        ] {
+            assert!(
+                parse_inventory(&(header.clone() + &records), &source).is_err(),
+                "{records}"
+            );
+        }
+        assert!(parse_inventory(&valid, &"c".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn legacy_zip_encoding_uses_flags_not_utf8_guessing() {
+        assert_eq!(decode_zip_name(b"caf\x82.txt", 0).unwrap(), "café.txt");
+        assert_eq!(decode_zip_name(b"\xc3\xa9", 0).unwrap(), "├⌐");
+        assert_eq!(
+            decode_zip_name("測試/é".as_bytes(), 0x0800).unwrap(),
+            "測試/é"
+        );
+        assert!(decode_zip_name(b"\x82", 0x0800).is_err());
+    }
+
+    #[test]
+    fn same_source_adoption_never_rebaselines_customizations() {
+        let fixture = Fixture::new("adoption-baseline");
+        fixture.install();
+        let inventory = fs::read(fixture.dest.join(INVENTORY_NAME)).unwrap();
+        fs::write(fixture.dest.join("app"), "edited").unwrap();
+        fs::write(fixture.dest.join("extra"), "addition").unwrap();
+        extract(&fixture.first, &fixture.dest, Some("new-owner")).unwrap();
+        assert_eq!(
+            fs::read(fixture.dest.join(INVENTORY_NAME)).unwrap(),
+            inventory
+        );
+        remove(&fixture.dest, Some(&fixture.first), Some("new-owner")).unwrap();
+        assert_eq!(fs::read(fixture.dest.join("app")).unwrap(), b"edited");
+        assert!(fixture.dest.join("extra").exists());
+        assert_eq!(fixture.record(), None);
+    }
+
+    #[test]
+    fn legacy_same_source_uses_fresh_zip_baseline_without_replacing_custom_tree() {
+        let fixture = Fixture::new("legacy-baseline");
+        fixture.install();
+        fs::remove_file(fixture.dest.join(INVENTORY_NAME)).unwrap();
+        fs::write(fixture.dest.join("app"), "edited").unwrap();
+        fs::write(fixture.dest.join("extension"), "keep").unwrap();
+        extract(&fixture.first, &fixture.dest, Some("new-owner")).unwrap();
+        let inventory = read_inventory(&fixture.dest, &hash_file(&fixture.first).unwrap()).unwrap();
+        assert!(!inventory.tree.contains_key("extension"));
+        assert_ne!(
+            inventory.tree["app"],
+            Item::File(hash_file(&fixture.dest.join("app")).unwrap())
+        );
+        remove(&fixture.dest, None, Some("new-owner")).unwrap();
+        assert_eq!(fs::read(fixture.dest.join("extension")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn legacy_uppercase_source_marker_is_normalized_on_owner_handoff() {
+        let fixture = Fixture::new("uppercase-marker");
+        fixture.install();
+        let hash = hash_file(&fixture.first).unwrap();
+        fs::write(fixture.dest.join(MARKER_NAME), hash.to_ascii_uppercase()).unwrap();
+        extract(&fixture.first, &fixture.dest, Some("new-owner")).unwrap();
+        assert_eq!(
+            fs::read(fixture.dest.join(MARKER_NAME)).unwrap(),
+            format!("{hash}\nowner=new-owner\n").as_bytes()
+        );
+    }
+
+    #[test]
+    fn adoption_owner_write_failure_restores_marker_and_new_metadata() {
+        let fixture = Fixture::new("adoption-fault");
+        fixture.install();
+        fs::remove_file(fixture.dest.join(INVENTORY_NAME)).unwrap();
+        let marker = fs::read(fixture.dest.join(MARKER_NAME)).unwrap();
+        fixture.inject("registry-write-after", 0);
+        let error = extract(&fixture.first, &fixture.dest, Some("new-owner")).unwrap_err();
+        assert!(error.contains("registry-write-after"));
+        fixture.assert_original();
+        assert_eq!(fs::read(fixture.dest.join(MARKER_NAME)).unwrap(), marker);
+        assert!(!fixture.dest.join(INVENTORY_NAME).exists());
+    }
+
+    #[test]
+    fn failed_install_after_backup_restores_original() {
+        let fixture = Fixture::new("install-rollback");
+        fixture.install();
+        fixture.inject("install", 0);
+        let error = extract(&fixture.next, &fixture.dest, Some("new-owner")).unwrap_err();
+        assert!(error.contains("cannot install"));
+        fixture.assert_original();
+        assert!(fixture.backups().is_empty());
+        assert!(fs::read_dir(&fixture.root).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            !name.contains(".extract-") && !name.contains(".ready-")
+        }));
+    }
+
+    #[test]
+    fn failed_restore_retains_original_backup_and_reports_path() {
+        let fixture = Fixture::new("restore-fault");
+        fixture.install();
+        fixture.inject("install", 0);
+        fixture.inject("rollback", 0);
+        let error = extract(&fixture.next, &fixture.dest, Some("new-owner")).unwrap_err();
+        assert!(error.contains("rollback failed"));
+        assert!(!fixture.dest.exists());
+        let backups = fixture.backups();
+        assert_eq!(backups.len(), 1);
+        assert!(error.contains(&backups[0].display().to_string()));
+        assert_eq!(fs::read(backups[0].join("app")).unwrap(), b"original");
+        assert_eq!(fixture.record().as_deref(), Some("old-owner"));
+    }
+
+    #[test]
+    fn replacement_owner_write_failure_restores_tree_and_previous_registry() {
+        let fixture = Fixture::new("owner-rollback");
+        fixture.install();
+        fixture.inject("registry-write-after", 0);
+        let error = extract(&fixture.next, &fixture.dest, Some("new-owner")).unwrap_err();
+        assert!(error.contains("registry-write-after"));
+        fixture.assert_original();
+        assert!(fixture.backups().is_empty());
+    }
+
+    #[test]
+    fn owner_failure_with_failed_rollback_retains_intact_original_backup() {
+        let fixture = Fixture::new("owner-restore-fault");
+        fixture.install();
+        fixture.inject("registry-write", 0);
+        fixture.inject("rollback", 0);
+        let error = extract(&fixture.next, &fixture.dest, Some("new-owner")).unwrap_err();
+        let backups = fixture.backups();
+        assert_eq!(backups.len(), 1);
+        assert!(error.contains(&backups[0].display().to_string()));
+        assert_eq!(fs::read(backups[0].join("app")).unwrap(), b"original");
+    }
+
+    #[test]
+    fn postcommit_cleanup_failure_keeps_new_tree_and_registry_consistent() {
+        let fixture = Fixture::new("cleanup-fault");
+        fixture.install();
+        fixture.inject("cleanup", 0);
+        assert_eq!(
+            exit_code(&[
+                OsString::from("extract"),
+                fixture.next.as_os_str().to_owned(),
+                fixture.dest.as_os_str().to_owned(),
+                OsString::from("new-owner"),
+            ]),
+            0
+        );
+        assert_eq!(fs::read(fixture.dest.join("app")).unwrap(), b"new");
+        assert_eq!(fixture.record().as_deref(), Some("new-owner"));
+        assert_eq!(
+            read_marker(&fixture.dest.join(MARKER_NAME))
+                .unwrap()
+                .owner
+                .as_deref(),
+            Some("new-owner")
+        );
+        assert_eq!(fixture.backups().len(), 1);
+    }
+
+    #[test]
+    fn postcommit_adoption_staging_cleanup_failure_is_successful() {
+        let fixture = Fixture::new("adoption-cleanup-fault");
+        fixture.install();
+        fs::remove_file(fixture.dest.join(INVENTORY_NAME)).unwrap();
+        fixture.inject("adoption-cleanup", 0);
+        assert_eq!(
+            exit_code(&[
+                OsString::from("extract"),
+                fixture.first.as_os_str().to_owned(),
+                fixture.dest.as_os_str().to_owned(),
+                OsString::from("new-owner"),
+            ]),
+            0
+        );
+        assert_eq!(fixture.record().as_deref(), Some("new-owner"));
+        assert_eq!(
+            read_marker(&fixture.dest.join(MARKER_NAME))
+                .unwrap()
+                .owner
+                .as_deref(),
+            Some("new-owner")
+        );
+        read_inventory(&fixture.dest, &hash_file(&fixture.first).unwrap()).unwrap();
+        assert!(fs::read_dir(&fixture.root).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("Ghidra.ready-")
+        }));
+    }
+
+    #[test]
+    fn upgrade_preserves_custom_tree_and_imports_only_nonconflicting_additions() {
+        let fixture = Fixture::new("preservation");
+        fixture.install();
+        fs::write(fixture.dest.join("app"), "edited upstream").unwrap();
+        fs::remove_file(fixture.dest.join("bin").join("tool")).unwrap();
+        fs::write(fixture.dest.join("safe-extension"), "keep").unwrap();
+        fs::write(fixture.dest.join("bin").join("plugin"), "nested addition").unwrap();
+        fs::create_dir(fixture.dest.join("empty-extension")).unwrap();
+        fs::write(fixture.dest.join("new-file"), "old conflict").unwrap();
+        fs::create_dir(fixture.dest.join("new-directory")).unwrap();
+        fs::write(
+            fixture.dest.join("new-directory").join("custom"),
+            "conflict child",
+        )
+        .unwrap();
+        fs::write(fixture.dest.join("CASE"), "case conflict").unwrap();
+        fs::create_dir(fixture.dest.join("資料")).unwrap();
+        fs::write(fixture.dest.join("資料").join("扩展"), "unicode").unwrap();
+        write_zip(
+            &fixture.next,
+            &[
+                ("ghidra/app", "new"),
+                ("ghidra/bin/tool", "restored"),
+                ("ghidra/new-file", "new upstream"),
+                ("ghidra/new-directory", "file not directory"),
+                ("ghidra/case", "new case"),
+            ],
+        );
+        extract(&fixture.next, &fixture.dest, Some("new-owner")).unwrap();
+        assert_eq!(fs::read(fixture.dest.join("app")).unwrap(), b"new");
+        assert_eq!(
+            fs::read(fixture.dest.join("bin").join("tool")).unwrap(),
+            b"restored"
+        );
+        assert_eq!(
+            fs::read(fixture.dest.join("safe-extension")).unwrap(),
+            b"keep"
+        );
+        assert_eq!(
+            fs::read(fixture.dest.join("bin").join("plugin")).unwrap(),
+            b"nested addition"
+        );
+        assert!(fixture.dest.join("empty-extension").is_dir());
+        assert_eq!(
+            fs::read(fixture.dest.join("new-file")).unwrap(),
+            b"new upstream"
+        );
+        assert_eq!(
+            fs::read(fixture.dest.join("new-directory")).unwrap(),
+            b"file not directory"
+        );
+        assert_eq!(fs::read(fixture.dest.join("case")).unwrap(), b"new case");
+        assert_eq!(
+            fs::read(fixture.dest.join("資料").join("扩展")).unwrap(),
+            b"unicode"
+        );
+        let recovered = fixture.recovered();
+        assert_eq!(recovered.len(), 1);
+        let summary =
+            fs::read_to_string(recovered[0].parent().unwrap().join("recovery.txt")).unwrap();
+        assert!(summary.contains(&format!("destination={}", fixture.dest.display())));
+        assert!(summary.contains(&format!(
+            "previous-source={}",
+            hash_file(&fixture.first).unwrap()
+        )));
+        assert!(summary.contains(&format!(
+            "incoming-source={}",
+            hash_file(&fixture.next).unwrap()
+        )));
+        assert_eq!(
+            fs::read(recovered[0].join("app")).unwrap(),
+            b"edited upstream"
+        );
+        assert_eq!(
+            fs::read(recovered[0].join("new-file")).unwrap(),
+            b"old conflict"
+        );
+        assert_eq!(
+            fs::read(recovered[0].join("CASE")).unwrap(),
+            b"case conflict"
+        );
+        let inventory = read_inventory(&fixture.dest, &hash_file(&fixture.next).unwrap()).unwrap();
+        assert!(!inventory.tree.contains_key("safe-extension"));
+        remove(&fixture.dest, None, Some("new-owner")).unwrap();
+        assert!(fixture.dest.exists());
+        assert_eq!(fixture.record(), None);
+        assert!(recovered[0].exists());
+    }
+
+    #[test]
+    fn added_directories_merge_without_overwriting_upstream_conflicts() {
+        let fixture = Fixture::new("directory-merge");
+        fixture.install();
+        let shared = fixture.dest.join("shared");
+        fs::create_dir_all(shared.join("nested")).unwrap();
+        fs::write(shared.join("custom.txt"), "custom").unwrap();
+        fs::write(shared.join("official.txt"), "old conflict").unwrap();
+        fs::write(shared.join("nested").join("custom.txt"), "nested custom").unwrap();
+        fs::create_dir(shared.join("file-conflict")).unwrap();
+        fs::write(
+            shared.join("file-conflict").join("custom.txt"),
+            "directory conflict",
+        )
+        .unwrap();
+        fs::write(shared.join("directory-conflict"), "file conflict").unwrap();
+        fs::create_dir(shared.join("CASE")).unwrap();
+        fs::write(shared.join("CASE").join("custom.txt"), "case conflict").unwrap();
+        write_zip(
+            &fixture.next,
+            &[
+                ("ghidra/app", "new"),
+                ("ghidra/shared/official.txt", "upstream"),
+                ("ghidra/shared/nested/official.txt", "nested upstream"),
+                ("ghidra/shared/file-conflict", "upstream file"),
+                (
+                    "ghidra/shared/directory-conflict/official.txt",
+                    "upstream directory",
+                ),
+                ("ghidra/shared/case/official.txt", "upstream case"),
+            ],
+        );
+        extract(&fixture.next, &fixture.dest, Some("new-owner")).unwrap();
+        assert_eq!(fs::read(shared.join("custom.txt")).unwrap(), b"custom");
+        assert_eq!(fs::read(shared.join("official.txt")).unwrap(), b"upstream");
+        assert_eq!(
+            fs::read(shared.join("nested").join("custom.txt")).unwrap(),
+            b"nested custom"
+        );
+        assert_eq!(
+            fs::read(shared.join("nested").join("official.txt")).unwrap(),
+            b"nested upstream"
+        );
+        assert_eq!(
+            fs::read(shared.join("file-conflict")).unwrap(),
+            b"upstream file"
+        );
+        assert_eq!(
+            fs::read(shared.join("directory-conflict").join("official.txt")).unwrap(),
+            b"upstream directory"
+        );
+        assert_eq!(
+            fs::read(shared.join("case").join("official.txt")).unwrap(),
+            b"upstream case"
+        );
+        assert!(!shared.join("case").join("custom.txt").exists());
+        let inventory = read_inventory(&fixture.dest, &hash_file(&fixture.next).unwrap()).unwrap();
+        assert!(!inventory.tree.contains_key("shared/custom.txt"));
+        assert!(!inventory.tree.contains_key("shared/nested/custom.txt"));
+        let recovered = fixture.recovered();
+        assert_eq!(recovered.len(), 1);
+        let old_shared = recovered[0].join("shared");
+        assert_eq!(
+            fs::read(old_shared.join("official.txt")).unwrap(),
+            b"old conflict"
+        );
+        assert_eq!(
+            fs::read(old_shared.join("file-conflict").join("custom.txt")).unwrap(),
+            b"directory conflict"
+        );
+        assert_eq!(
+            fs::read(old_shared.join("directory-conflict")).unwrap(),
+            b"file conflict"
+        );
+        assert_eq!(
+            fs::read(old_shared.join("CASE").join("custom.txt")).unwrap(),
+            b"case conflict"
+        );
+    }
+
+    #[test]
+    fn unknown_baseline_is_recovered_whole_but_not_imported() {
+        let fixture = Fixture::new("unknown");
+        fs::create_dir(&fixture.dest).unwrap();
+        fs::write(fixture.dest.join("custom"), "unclassified").unwrap();
+        extract(&fixture.next, &fixture.dest, None).unwrap();
+        assert!(!fixture.dest.join("custom").exists());
+        assert_eq!(fixture.recovered().len(), 1);
+        assert_eq!(
+            fs::read(fixture.recovered()[0].join("custom")).unwrap(),
+            b"unclassified"
+        );
+    }
+
+    #[test]
+    fn preservation_failure_leaves_original_tree_and_owner_intact() {
+        let fixture = Fixture::new("recovery-fault");
+        fixture.install();
+        fs::write(fixture.dest.join("custom"), "keep").unwrap();
+        fixture.inject("recovery", 0);
+        assert!(extract(&fixture.next, &fixture.dest, Some("new-owner")).is_err());
+        fixture.assert_original();
+        assert_eq!(fs::read(fixture.dest.join("custom")).unwrap(), b"keep");
+        assert!(fixture.backups().is_empty());
+    }
+
+    #[test]
+    fn incomplete_recovery_copy_never_discards_original() {
+        let fixture = Fixture::new("recovery-copy-fault");
+        fixture.install();
+        fs::write(fixture.dest.join("custom"), "keep").unwrap();
+        fixture.inject("recovery-copy", 1);
+        let error = extract(&fixture.next, &fixture.dest, Some("new-owner")).unwrap_err();
+        assert!(error.contains("incomplete recovery"));
+        fixture.assert_original();
+        assert_eq!(fs::read(fixture.dest.join("custom")).unwrap(), b"keep");
+        assert!(fixture.backups().is_empty());
+        assert_eq!(fixture.recovered().len(), 1);
+    }
+
+    #[test]
+    fn initial_owner_commit_failure_restores_absent_destination_and_record() {
+        let fixture = Fixture::new("initial-commit-fault");
+        fixture.inject("registry-write-after", 0);
+        assert!(extract(&fixture.first, &fixture.dest, Some("new-owner")).is_err());
+        assert!(!fixture.dest.exists());
+        assert_eq!(fixture.record(), None);
+        assert!(fixture.backups().is_empty());
+    }
+
+    #[test]
+    fn reserved_archive_metadata_is_rejected_before_and_after_flattening() {
+        let fixture = Fixture::new("reserved-metadata");
+        for metadata in METADATA_NAMES {
+            for name in [
+                format!("{metadata}/payload"),
+                format!("ghidra/{metadata}"),
+                format!("ghidra/{metadata}/payload"),
+            ] {
+                write_zip(&fixture.first, &[(&name, "not helper metadata")]);
+                assert!(
+                    extract(&fixture.first, &fixture.dest, None).is_err(),
+                    "{name}"
+                );
+                assert!(!fixture.dest.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_legacy_baseline_fails_without_replacing_custom_tree() {
+        let fixture = Fixture::new("legacy-invalid-source");
+        fs::write(&fixture.first, b"not a zip").unwrap();
+        fs::create_dir(&fixture.dest).unwrap();
+        fs::write(fixture.dest.join("custom"), "keep").unwrap();
+        let marker = Marker {
+            hash: hash_file(&fixture.first).unwrap(),
+            owner: Some("old-owner".into()),
+        };
+        write_marker_atomically(&fixture.dest, &marker).unwrap();
+        assert!(extract(&fixture.first, &fixture.dest, Some("new-owner")).is_err());
+        assert_eq!(
+            read_marker(&fixture.dest.join(MARKER_NAME)).unwrap(),
+            marker
+        );
+        assert_eq!(fs::read(fixture.dest.join("custom")).unwrap(), b"keep");
+        assert!(!fixture.dest.join(INVENTORY_NAME).exists());
+    }
+
+    #[test]
+    fn missing_packaged_file_and_unknown_inventory_are_retained() {
+        let fixture = Fixture::new("retention");
+        fixture.install();
+        fs::remove_file(fixture.dest.join("app")).unwrap();
+        remove(&fixture.dest, None, Some("old-owner")).unwrap();
+        assert!(fixture.dest.exists());
+        assert_eq!(fixture.record(), None);
+        fs::write(fixture.dest.join("app"), "original").unwrap();
+        fs::write(fixture.dest.join(INVENTORY_NAME), "corrupt").unwrap();
+        remove(&fixture.dest, None, Some("old-owner")).unwrap();
+        assert!(fixture.dest.join("app").exists());
+        fs::remove_file(fixture.dest.join(MARKER_NAME)).unwrap();
+        remove(&fixture.dest, None, None).unwrap();
+        assert!(fixture.dest.exists());
+    }
+
+    #[test]
+    fn partial_removal_keeps_authorization_and_retries_missing_files() {
+        let fixture = Fixture::new("removal-retry");
+        fixture.install();
+        fixture.inject("remove-payload", 1);
+        assert!(remove(&fixture.dest, Some(&fixture.first), Some("old-owner")).is_err());
+        assert!(fixture.dest.join(MARKER_NAME).exists());
+        assert!(fixture.dest.join(INVENTORY_NAME).exists());
+        assert!(fixture.dest.join(REMOVAL_NAME).exists());
+        let current = scan_tree(&fixture.dest, false).unwrap();
+        assert!(
+            current
+                .values()
+                .filter(|item| matches!(item, Item::File(_)))
+                .count()
+                < 2
+        );
+        remove(&fixture.dest, Some(&fixture.first), Some("wrong-owner")).unwrap();
+        assert!(fixture.dest.exists());
+        remove(&fixture.dest, Some(&fixture.first), Some("old-owner")).unwrap();
+        assert!(!fixture.dest.exists());
+        assert_eq!(fixture.record(), None);
+    }
+
+    #[test]
+    fn final_removal_failure_restores_metadata_for_retry() {
+        let fixture = Fixture::new("removal-final");
+        fixture.install();
+        fixture.inject("remove-final", 0);
+        assert!(remove(&fixture.dest, None, Some("old-owner")).is_err());
+        assert!(fixture.dest.join(MARKER_NAME).exists());
+        assert!(fixture.dest.join(INVENTORY_NAME).exists());
+        assert!(fixture.dest.join(REMOVAL_NAME).exists());
+        assert!(scan_tree(&fixture.dest, false).unwrap().is_empty());
+        remove(&fixture.dest, None, Some("old-owner")).unwrap();
+        assert!(!fixture.dest.exists());
+    }
+
+    #[test]
+    fn foreign_removal_state_cannot_authorize_missing_packaged_files() {
+        let fixture = Fixture::new("foreign-removal-state");
+        fixture.install();
+        fs::remove_file(fixture.dest.join("app")).unwrap();
+        let mut marker = read_marker(&fixture.dest.join(MARKER_NAME)).unwrap();
+        marker.owner = Some("different-owner".into());
+        fs::write(fixture.dest.join(REMOVAL_NAME), removal_text(&marker)).unwrap();
+        remove(&fixture.dest, Some(&fixture.first), Some("old-owner")).unwrap();
+        assert!(fixture.dest.exists());
+        assert!(fixture.dest.join("bin").join("tool").exists());
+    }
+
+    #[test]
+    fn removal_retry_rechecks_new_user_edits_and_additions() {
+        for edit in [false, true] {
+            let fixture = Fixture::new("removal-drift");
+            fixture.install();
+            fixture.inject("remove-payload", 0);
+            assert!(remove(&fixture.dest, None, Some("old-owner")).is_err());
+            fs::write(
+                fixture.dest.join(if edit { "app" } else { "custom" }),
+                "keep",
+            )
+            .unwrap();
+            remove(&fixture.dest, None, Some("old-owner")).unwrap();
+            assert!(fixture.dest.exists());
+            assert_eq!(fixture.record(), None);
+        }
+    }
+
+    #[test]
+    fn registry_clear_failure_is_retryable_when_destination_is_absent() {
+        let fixture = Fixture::new("clear-retry");
+        fixture.install();
+        fixture.inject("registry-clear", 0);
+        assert!(remove(&fixture.dest, None, Some("old-owner")).is_err());
+        assert!(!fixture.dest.exists());
+        assert_eq!(fixture.record().as_deref(), Some("old-owner"));
+        remove(&fixture.dest, None, Some("other-owner")).unwrap();
+        assert_eq!(fixture.record().as_deref(), Some("old-owner"));
+        remove(&fixture.dest, None, Some("old-owner")).unwrap();
+        assert_eq!(fixture.record(), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ordinary_readonly_files_allow_clean_removal_and_backup_cleanup() {
+        for upgrade in [false, true] {
+            let fixture = Fixture::new("readonly-clean");
+            fixture.install();
+            let path = fixture.dest.join("app");
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&path, permissions).unwrap();
+            if upgrade {
+                extract(&fixture.next, &fixture.dest, Some("new-owner")).unwrap();
+                assert!(fixture.backups().is_empty());
+            } else {
+                remove(&fixture.dest, None, Some("old-owner")).unwrap();
+                assert!(!fixture.dest.exists());
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn edited_readonly_file_is_retained_without_attribute_changes() {
+        let fixture = Fixture::new("readonly-edit");
+        fixture.install();
+        let path = fixture.dest.join("app");
+        fs::write(&path, "edited").unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).unwrap();
+        remove(&fixture.dest, None, Some("old-owner")).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"edited");
+        assert!(fs::metadata(&path).unwrap().permissions().readonly());
+    }
+
+    #[test]
+    fn destination_lock_excludes_competitors_and_is_released() {
+        let fixture = Fixture::new("lock");
+        let lock = DestinationLock::acquire(&fixture.dest).unwrap();
+        assert!(DestinationLock::acquire(&fixture.dest).is_err());
+        assert!(extract(&fixture.first, &fixture.dest, None).is_err());
+        drop(lock);
+        extract(&fixture.first, &fixture.dest, None).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn trailing_separator_uses_same_sibling_destination_lock() {
+        let fixture = Fixture::new("lock-trailing-separator");
+        let lock = DestinationLock::acquire(&fixture.dest).unwrap();
+        let alias = PathBuf::from(format!("{}\\", fixture.dest.display()));
+        assert!(DestinationLock::acquire(&alias).is_err());
+        drop(lock);
+        let lock = DestinationLock::acquire(&alias).unwrap();
+        assert!(DestinationLock::acquire(&fixture.dest).is_err());
+        drop(lock);
     }
 
     #[test]
@@ -1432,7 +3054,7 @@ mod tests {
         insert_zip64_end_records(&mut bytes);
         fs::write(&archive_path, bytes).unwrap();
         assert_ne!(
-            read_central_directory_attributes(&archive_path).unwrap()[0] & 0x0400,
+            read_central_directory_attributes(&archive_path).unwrap()[0].attributes & 0x0400,
             0
         );
         let mut zip = ZipArchive::new(File::open(&archive_path).unwrap()).unwrap();

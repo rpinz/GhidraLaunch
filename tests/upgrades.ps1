@@ -99,6 +99,19 @@ function Assert-Installed([string]$Variant, [string]$Version) {
     }
 }
 
+function Assert-RetainedUninstall {
+    if (-not (Test-Path -LiteralPath "$install\Ghidra\ghidraRun.bat") -or
+        [IO.File]::ReadAllText("$install\Ghidra\support\user.txt").Trim() -ne 'preserved') {
+        throw 'Customized uninstall did not retain the complete Ghidra tree'
+    }
+    if ((Test-Path -LiteralPath "$install\GhidraLaunchC.exe") -or
+        (Test-Path -LiteralPath "$install\GhidraLaunchRS.exe")) {
+        throw 'Customized uninstall left an installed launcher'
+    }
+    $owner = (Get-ItemProperty 'HKCU:\Software\rpinz\Ghidra Launch' -Name PayloadOwner -ErrorAction SilentlyContinue).PayloadOwner
+    if ($owner) { throw 'Customized uninstall left an active payload ownership record' }
+}
+
 $last = $null
 $completed = $false
 try {
@@ -137,7 +150,8 @@ try {
             }
             Invoke-Bundle $last '/uninstall'
             $last = $null
-            if (Test-Path -LiteralPath "$install/Ghidra") { throw 'Legacy migration uninstall left Ghidra behind' }
+            Assert-RetainedUninstall
+            Remove-Item -LiteralPath "$install\Ghidra" -Recurse -Force
         }
     }
     foreach ($step in @(@('1.0.0', 'C'), @('1.0.0', 'C'), @('1.0.0', 'Rust'), @('1.0.0', 'C'), @('1.0.1', 'Rust'), @('1.0.1', 'C'))) {
@@ -169,6 +183,29 @@ try {
         (Get-Content -LiteralPath "$install/Ghidra/support/user.txt" -Raw).Trim() -ne 'preserved') {
         throw 'Rebuilt same-version bundle did not safely transfer payload ownership'
     }
+    $changedPayload = Join-Path $scratch 'changed-source'
+    New-Item -ItemType Directory -Path $changedPayload | Out-Null
+    Copy-Item "$PayloadRoot\Ghidra.zip", "$PayloadRoot\OpenJDK21U-jdk_x64.msi", "$PayloadRoot\Versions.wxi" $changedPayload
+    [IO.File]::WriteAllText("$install\Ghidra\support\fixture.txt", 'edited upstream fixture')
+    $archive = [IO.Compression.ZipFile]::Open("$changedPayload\Ghidra.zip", [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $archive.GetEntry('ghidra_PUBLIC/support/fixture.txt').Delete()
+        $writer = [IO.StreamWriter]::new($archive.CreateEntry('ghidra_PUBLIC/support/fixture.txt').Open())
+        try { $writer.Write('new upstream fixture') } finally { $writer.Dispose() }
+    } finally { $archive.Dispose() }
+    & "$root\scripts\build.ps1" -Target Internal -ReleaseVersion '1.0.1' -PayloadRoot $changedPayload -VersionsFile "$changedPayload\Versions.wxi"
+    & "$root\scripts\build.ps1" -Target Setup -ReleaseVersion '1.0.1' -PayloadRoot $changedPayload -VersionsFile "$changedPayload\Versions.wxi"
+    Copy-Item "$root\GhidraLaunchSetup\bin\Release\GhidraLaunchSetupC.exe" $changedPayload
+    $last = "$changedPayload\GhidraLaunchSetupC.exe"
+    Invoke-Bundle $last '/install'
+    Assert-Installed C '1.0.1'
+    if ([IO.File]::ReadAllText("$install\Ghidra\support\user.txt").Trim() -ne 'preserved' -or
+        [IO.File]::ReadAllText("$install\Ghidra\support\fixture.txt") -ne 'new upstream fixture') {
+        throw 'Changed-source upgrade did not migrate additions while installing the new upstream files'
+    }
+    $recovered = @(Get-ChildItem -LiteralPath "$env:LOCALAPPDATA\Ghidra Launch Recovery" -Recurse -File |
+        Where-Object { $_.Name -eq 'fixture.txt' -and [IO.File]::ReadAllText($_.FullName) -eq 'edited upstream fixture' })
+    if (-not $recovered.Count) { throw 'Changed-source upgrade lost edited upstream files' }
     $failedMsi = Join-Path $scratch 'failed-msi'
     New-Item -ItemType Directory -Path $failedMsi | Out-Null
     & "$root/scripts/build.ps1" -Target Native -ReleaseVersion '1.0.2'
@@ -252,9 +289,17 @@ try {
         throw 'Republished bundle with an unchanged launcher MSI did not take payload ownership'
     }
     Invoke-Bundle $last '/uninstall'
+    Assert-RetainedUninstall
+    Invoke-Bundle $last '/install'
+    Assert-Installed Rust '1.0.3'
+    if ([IO.File]::ReadAllText("$install\Ghidra\support\user.txt").Trim() -ne 'preserved') {
+        throw 'Reinstall into a retained tree lost user additions'
+    }
+    Remove-Item -LiteralPath "$install\Ghidra\support\user.txt"
+    Invoke-Bundle $last '/uninstall'
     $last = $null
-    if (Test-Path -LiteralPath "$install/Ghidra") { throw 'Uninstall left its owned Ghidra tree' }
-    Write-Host 'Legacy migration, reinstall, downgrade, and same/newer-version switching checks passed.'
+    if (Test-Path -LiteralPath "$install\Ghidra") { throw 'Clean uninstall left its owned Ghidra tree' }
+    Write-Host 'Legacy migration, preservation, retained-tree reinstall, downgrade, and variant switching checks passed.'
     $completed = $true
 } catch {
     Write-Host "Upgrade failure diagnostics: $LogRoot"

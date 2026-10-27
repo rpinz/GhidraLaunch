@@ -23,6 +23,8 @@ jobs:
   build:
     runs-on: windows-2022
     timeout-minutes: 300
+    outputs:
+      release_commit: ${{ steps.release_tag.outputs.commit }}
     permissions:
       actions: read
       contents: read
@@ -32,6 +34,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Resolve release tag
+        id: release_tag
         shell: pwsh
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -61,6 +64,7 @@ jobs:
           $tagCommit = (git rev-parse "refs/tags/$tag^{commit}").Trim()
           $headCommit = (git rev-parse HEAD).Trim()
           if ($tagCommit -ne $headCommit) { throw "Checkout does not match tag $tag" }
+          "commit=$tagCommit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/$tag"
           $release = Invoke-WebRequest -Uri $url -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' } -SkipHttpErrorCheck
           if ($release.StatusCode -eq 200) { throw "Release $tag already exists; refusing to replace or publish its assets" }
@@ -96,6 +100,10 @@ jobs:
       - name: Restore pinned WiX v5 tooling
         shell: pwsh
         run: dotnet tool restore
+
+      - name: Restore pinned Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
 
       - name: Build C and Rust launchers and native helpers
         shell: pwsh
@@ -408,6 +416,7 @@ jobs:
     timeout-minutes: 30
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
       SIGNPATH_ENABLED: ${{ vars.SIGNPATH_ENABLED }}
     permissions:
       contents: write
@@ -453,6 +462,22 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
+          function Assert-ReleaseTagCommit {
+            if ($env:RELEASE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'Missing or invalid built release commit' }
+            $reference = & gh api "repos/{owner}/{repo}/git/ref/tags/$env:RELEASE_TAG"
+            if ($LASTEXITCODE -ne 0) { throw 'Release tag lookup failed' }
+            $target = ($reference | ConvertFrom-Json).object
+            $seen = [System.Collections.Generic.HashSet[string]]::new()
+            while ($true) {
+              if ($target.sha -notmatch '^[0-9a-f]{40}$') { throw 'Release tag has no valid target SHA' }
+              if ($target.type -eq 'commit') { break }
+              if ($target.type -ne 'tag' -or -not $seen.Add($target.sha)) { throw 'Release tag does not resolve to a commit' }
+              $annotation = & gh api "repos/{owner}/{repo}/git/tags/$($target.sha)"
+              if ($LASTEXITCODE -ne 0) { throw 'Annotated release tag lookup failed' }
+              $target = ($annotation | ConvertFrom-Json).object
+            }
+            if ($target.sha -ne $env:RELEASE_COMMIT) { throw "Release tag $env:RELEASE_TAG moved from the built commit" }
+          }
           $prerelease = $env:RELEASE_TAG -match '-'
           $notes = if ($env:SIGNPATH_ENABLED -eq 'true') {
             'Windows artifacts have Authenticode signatures provided by SignPath Foundation. SBOMs and published assets also have keyless Sigstore signatures. Code signing policy: https://github.com/rpinz/GhidraLaunch#code-signing-policy'
@@ -476,8 +501,7 @@ jobs:
           foreach ($asset in $assets) {
             if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Missing release asset: $asset" }
           }
-          & gh api "repos/{owner}/{repo}/git/ref/tags/$env:RELEASE_TAG" | Out-Null
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Assert-ReleaseTagCommit
           $created = & gh api --method POST 'repos/{owner}/{repo}/releases' -f "tag_name=$env:RELEASE_TAG" -f "name=$env:RELEASE_TAG" -f "body=$notes" -F draft=true -F "prerelease=$($prerelease.ToString().ToLowerInvariant())" -F generate_release_notes=true
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $release = $created | ConvertFrom-Json
@@ -507,5 +531,6 @@ jobs:
             $remoteHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
             if ($localHash -ne $remoteHash) { throw "Uploaded asset differs from verified local file: $asset" }
           }
+          Assert-ReleaseTagCommit
           & gh api --method PATCH $releasePath -F draft=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

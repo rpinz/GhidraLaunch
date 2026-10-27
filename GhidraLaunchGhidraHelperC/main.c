@@ -8,6 +8,8 @@
 #include "vendor/miniz/miniz.h"
 
 #define MARKER L".ghidralaunch-source.sha256"
+#define INVENTORY L".ghidralaunch-inventory"
+#define REMOVAL L".ghidralaunch-removal"
 #define OWNER_KEY L"Software\\rpinz\\Ghidra Launch"
 #define OWNER_VALUE L"PayloadOwner"
 #define OWNER_DESTINATION L"Ghidra Launch\\Ghidra"
@@ -21,12 +23,28 @@ typedef struct {
     wchar_t *name;
     BOOL directory;
     BOOL explicit_entry;
+    char hash[65];
 } PathEntry;
 
 typedef struct {
     PathEntry *items;
     size_t count, capacity;
 } Paths;
+
+typedef struct {
+    char *data;
+    DWORD size;
+    BOOL exists;
+} Blob;
+
+typedef struct {
+    Blob value;
+    DWORD type;
+    BOOL managed;
+} OwnerRecord;
+
+static BOOL metadata_name(const wchar_t *name);
+static BOOL restore_metadata(const wchar_t *dest, const wchar_t *name, const Blob *original);
 
 static BOOL win_error(const wchar_t *operation, const wchar_t *path)
 {
@@ -486,9 +504,14 @@ static BOOL clear_owner_record(const wchar_t *dest, const char *owner)
         return win_error(L"Opening payload ownership record", OWNER_KEY);
     }
     status = RegQueryValueExW(key, OWNER_VALUE, NULL, &type, (BYTE *)current, &bytes);
+    if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND) {
+        RegCloseKey(key);
+        SetLastError((DWORD)status);
+        return win_error(L"Reading payload ownership record", OWNER_KEY);
+    }
     /* Retract only our own record; an incoming bundle may already have adopted
        the tree, and its record must outlive this removal. */
-    if (status == ERROR_SUCCESS && type == REG_SZ) {
+    if (status == ERROR_SUCCESS && type == REG_SZ && !(bytes % sizeof(wchar_t))) {
         current[bytes / sizeof(wchar_t)] = L'\0';
         if (!wcscmp(current, text)) {
             removal = RegDeleteValueW(key, OWNER_VALUE);
@@ -713,6 +736,26 @@ static BOOL reserved_component(const wchar_t *s, size_t n)
     return FALSE;
 }
 
+static BOOL valid_relative(const wchar_t *name)
+{
+    size_t i, start = 0, n = wcslen(name);
+    if (!n || name[0] == L'\\')
+        return FALSE;
+    for (i = 0; i <= n; ++i) {
+        wchar_t c = name[i];
+        if (i == n || c == L'\\') {
+            size_t length = i - start;
+            if (!length || name[i - 1] == L'.' || name[i - 1] == L' ' ||
+                reserved_component(name + start, length))
+                return FALSE;
+            start = i + 1;
+        } else if (c < 32 || c == 127 || wcschr(L"/:<>\"|?*", c)) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
 static wchar_t *entry_name(mz_zip_archive *zip, mz_uint index, BOOL *directory)
 {
     mz_zip_archive_file_stat stat;
@@ -720,7 +763,7 @@ static wchar_t *entry_name(mz_zip_archive *zip, mz_uint index, BOOL *directory)
     char *raw = NULL;
     wchar_t *name = NULL;
     int count;
-    size_t i, start, n;
+    size_t i, n;
     unsigned type;
     if (!mz_zip_reader_file_stat(zip, index, &stat) || bytes <= 1)
         goto invalid;
@@ -757,21 +800,8 @@ static wchar_t *entry_name(mz_zip_archive *zip, mz_uint index, BOOL *directory)
                  (stat.m_external_attr & FILE_ATTRIBUTE_DIRECTORY) || name[n - 1] == L'\\';
     if (*directory && name[n - 1] == L'\\')
         name[--n] = 0;
-    if (!n || name[0] == L'\\')
+    if (!valid_relative(name))
         goto invalid;
-    start = 0;
-    for (i = 0; i <= n; ++i) {
-        wchar_t c = name[i];
-        if (i == n || c == L'\\') {
-            size_t length = i - start;
-            if (!length || name[i - 1] == L'.' || name[i - 1] == L' ' ||
-                reserved_component(name + start, length))
-                goto invalid;
-            start = i + 1;
-        } else if (c < 32 || c == 127 || wcschr(L":<>\"|?*", c)) {
-            goto invalid;
-        }
-    }
     goto done;
 invalid:
     fwprintf(stderr, L"Unsafe or unsupported ZIP entry at index %u.\n", index);
@@ -797,6 +827,7 @@ static BOOL add_path(Paths *paths, const wchar_t *name, size_t n, BOOL dir, BOOL
         paths->capacity = capacity;
     }
     item = &paths->items[paths->count];
+    memset(item, 0, sizeof(*item));
     item->name = copy_n(name, n);
     if (!item->name)
         return FALSE;
@@ -821,8 +852,18 @@ static BOOL validate_archive(mz_zip_archive *zip)
     for (index = 0; index < count; ++index) {
         BOOL dir;
         wchar_t *name = entry_name(zip, index, &dir);
+        wchar_t *first, *slash;
         if (!name)
             goto done;
+        slash = wcschr(name, L'\\');
+        first = copy_n(name, slash ? (size_t)(slash - name) : wcslen(name));
+        if (!first || metadata_name(first)) {
+            problem(L"ZIP collides with helper-owned root metadata", name);
+            free(first);
+            free(name);
+            goto done;
+        }
+        free(first);
         for (i = 0; name[i]; ++i) {
             if (name[i] == L'\\' && !add_path(&paths, name, i, TRUE, FALSE)) {
                 free(name);
@@ -948,15 +989,800 @@ static wchar_t *source_root(const wchar_t *stage)
     return copy_n(stage, wcslen(stage));
 }
 
+static void free_paths(Paths *paths)
+{
+    size_t i;
+    for (i = 0; i < paths->count; ++i)
+        free(paths->items[i].name);
+    free(paths->items);
+    memset(paths, 0, sizeof(*paths));
+}
+
+static BOOL metadata_name(const wchar_t *name)
+{
+    return !_wcsicmp(name, MARKER) || !_wcsicmp(name, INVENTORY) ||
+           !_wcsicmp(name, REMOVAL);
+}
+
+static PathEntry *find_path(const Paths *paths, const wchar_t *name)
+{
+    PathEntry key = {0};
+    key.name = (wchar_t *)name;
+    return paths->count ? bsearch(&key, paths->items, paths->count,
+                                  sizeof(PathEntry), compare_paths) : NULL;
+}
+
+static BOOL sort_paths(Paths *paths)
+{
+    size_t i;
+    if (paths->count)
+        qsort(paths->items, paths->count, sizeof(PathEntry), compare_paths);
+    for (i = 1; i < paths->count; ++i)
+        if (!compare_paths(&paths->items[i - 1], &paths->items[i]))
+            return problem(L"Duplicate or case-conflicting inventory path", paths->items[i].name);
+    return TRUE;
+}
+
+/* Directory handles deny rename/delete while descendants are inspected. */
+static BOOL scan_tree(const wchar_t *root, const wchar_t *relative, Paths *paths,
+                      BOOL reject_metadata)
+{
+    wchar_t *dir = *relative ? join(root, relative) : copy_n(root, wcslen(root));
+    wchar_t *pattern = NULL;
+    HANDLE pin = INVALID_HANDLE_VALUE, search = INVALID_HANDLE_VALUE;
+    BY_HANDLE_FILE_INFORMATION info;
+    WIN32_FIND_DATAW data;
+    BOOL ok = FALSE;
+    unsigned metadata_seen = 0;
+    if (!dir || !directories(dir, FALSE))
+        goto done;
+    pin = CreateFileW(dir, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                      NULL, OPEN_EXISTING,
+                      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (pin == INVALID_HANDLE_VALUE) {
+        win_error(L"Opening inventory directory", dir);
+        goto done;
+    }
+    if (!GetFileInformationByHandle(pin, &info) ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        problem(L"Cannot safely inspect inventory directory", dir);
+        goto done;
+    }
+    pattern = join(dir, L"*");
+    if (!pattern)
+        goto done;
+    search = FindFirstFileW(pattern, &data);
+    if (search == INVALID_HANDLE_VALUE) {
+        if (GetLastError() == ERROR_FILE_NOT_FOUND)
+            ok = TRUE;
+        else
+            win_error(L"Enumerating inventory directory", dir);
+        goto done;
+    }
+    do {
+        wchar_t *name, *path;
+        BOOL directory;
+        ok = FALSE;
+        if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L".."))
+            continue;
+        if (!*relative && metadata_name(data.cFileName)) {
+            unsigned bit = !_wcsicmp(data.cFileName, MARKER) ? 1u :
+                           (!_wcsicmp(data.cFileName, INVENTORY) ? 2u : 4u);
+            if (reject_metadata) {
+                problem(L"ZIP collides with helper-owned root metadata", data.cFileName);
+                goto done;
+            }
+            if (metadata_seen & bit) {
+                problem(L"Case-conflicting helper metadata cannot be classified safely", dir);
+                goto done;
+            }
+            metadata_seen |= bit;
+            if (data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) {
+                problem(L"Helper metadata is not an ordinary file", data.cFileName);
+                goto done;
+            }
+            continue;
+        }
+        name = *relative ? join(relative, data.cFileName) :
+                           copy_n(data.cFileName, wcslen(data.cFileName));
+        path = name ? join(root, name) : NULL;
+        if (!name || !path) {
+            free(name);
+            free(path);
+            goto done;
+        }
+        directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) || !valid_relative(name)) {
+            problem(L"Cannot preserve unsafe or reparse-point payload entry", path);
+            free(name);
+            free(path);
+            goto done;
+        }
+        if (!add_path(paths, name, wcslen(name), directory, TRUE)) {
+            free(name);
+            free(path);
+            goto done;
+        }
+        if (directory) {
+            ok = scan_tree(root, name, paths, reject_metadata);
+        } else {
+            HANDLE file = open_input(path);
+            ok = file != INVALID_HANDLE_VALUE &&
+                 sha256(file, paths->items[paths->count - 1].hash);
+            if (file != INVALID_HANDLE_VALUE)
+                CloseHandle(file);
+        }
+        free(name);
+        free(path);
+        if (!ok)
+            goto done;
+    } while (FindNextFileW(search, &data));
+    ok = GetLastError() == ERROR_NO_MORE_FILES;
+    if (!ok)
+        win_error(L"Continuing inventory enumeration", dir);
+done:
+    if (search != INVALID_HANDLE_VALUE)
+        FindClose(search);
+    if (pin != INVALID_HANDLE_VALUE)
+        CloseHandle(pin);
+    free(pattern);
+    free(dir);
+    return ok;
+}
+
+static BOOL read_blob(const wchar_t *dir, const wchar_t *name, Blob *blob)
+{
+    wchar_t *path = join(dir, name);
+    HANDLE file = INVALID_HANDLE_VALUE;
+    LARGE_INTEGER size;
+    DWORD got, attr;
+    BOOL ok = FALSE;
+    memset(blob, 0, sizeof(*blob));
+    if (!path)
+        return FALSE;
+    attr = GetFileAttributesW(path);
+    if (attr == INVALID_FILE_ATTRIBUTES && absent(GetLastError())) {
+        ok = TRUE;
+        goto done;
+    }
+    file = open_input(path);
+    if (file == INVALID_HANDLE_VALUE)
+        goto done;
+    if (!GetFileSizeEx(file, &size)) {
+        win_error(L"Reading metadata size", path);
+        goto done;
+    }
+    if (size.QuadPart < 0 || size.QuadPart > 64 * 1024 * 1024) {
+        problem(L"Helper metadata exceeds safe size limit", path);
+        goto done;
+    }
+    blob->size = (DWORD)size.QuadPart;
+    blob->data = allocate((size_t)blob->size + 1);
+    if (!blob->data)
+        goto done;
+    if (!ReadFile(file, blob->data, blob->size, &got, NULL) || got != blob->size) {
+        win_error(L"Reading helper metadata", path);
+        goto done;
+    }
+    blob->data[blob->size] = 0;
+    blob->exists = TRUE;
+    ok = TRUE;
+done:
+    if (file != INVALID_HANDLE_VALUE)
+        CloseHandle(file);
+    free(path);
+    return ok;
+}
+
+static BOOL write_bytes(HANDLE file, const void *data, DWORD size)
+{
+    DWORD wrote;
+    if (!WriteFile(file, data, size, &wrote, NULL) || wrote != size)
+        return win_error(L"Writing helper metadata", L"");
+    return TRUE;
+}
+
+static BOOL write_blob(const wchar_t *dir, const wchar_t *name, const Blob *blob)
+{
+    wchar_t random[50], *temp = NULL, *path = join(dir, name);
+    HANDLE file = INVALID_HANDLE_VALUE;
+    BOOL ok = FALSE, created = FALSE;
+    if (!path)
+        goto done;
+    if (!blob->exists) {
+        DWORD attr = GetFileAttributesW(path);
+        if (attr == INVALID_FILE_ATTRIBUTES && absent(GetLastError())) {
+            ok = TRUE;
+            goto done;
+        }
+        if (attr == INVALID_FILE_ATTRIBUTES ||
+            (attr & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+            problem(L"Cannot safely restore absent metadata", path);
+            goto done;
+        }
+        if ((attr & FILE_ATTRIBUTE_READONLY) &&
+            !SetFileAttributesW(path, attr & ~FILE_ATTRIBUTE_READONLY)) {
+            win_error(L"Clearing metadata read-only attribute", path);
+            goto done;
+        }
+        ok = DeleteFileW(path);
+        if (!ok)
+            win_error(L"Restoring absent helper metadata", path);
+        goto done;
+    }
+    if (!random_name(random, L".marker-"))
+        goto done;
+    temp = join(dir, random);
+    if (!temp)
+        goto done;
+    file = CreateFileW(temp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        win_error(L"Creating temporary helper metadata", temp);
+        goto done;
+    }
+    created = TRUE;
+    if (!write_bytes(file, blob->data, blob->size))
+        goto done;
+    if (!FlushFileBuffers(file)) {
+        win_error(L"Flushing helper metadata", temp);
+        goto done;
+    }
+    if (!CloseHandle(file)) {
+        file = INVALID_HANDLE_VALUE;
+        win_error(L"Closing helper metadata", temp);
+        goto done;
+    }
+    file = INVALID_HANDLE_VALUE;
+    if (!MoveFileExW(temp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        win_error(L"Replacing helper metadata", path);
+        goto done;
+    }
+    ok = TRUE;
+done:
+    if (file != INVALID_HANDLE_VALUE)
+        CloseHandle(file);
+    if (!ok && created && !DeleteFileW(temp))
+        win_error(L"Cleaning temporary helper metadata", temp);
+    free(temp);
+    free(path);
+    return ok;
+}
+
+static BOOL lower_hash(const char *hash)
+{
+    size_t i;
+    for (i = 0; i < 64; ++i)
+        if (!((hash[i] >= '0' && hash[i] <= '9') || (hash[i] >= 'a' && hash[i] <= 'f')))
+            return FALSE;
+    return TRUE;
+}
+
+static wchar_t *inventory_name(const char *text, size_t size)
+{
+    int count;
+    size_t i;
+    wchar_t *name;
+    if (!size || size > INT_MAX || memchr(text, '\\', size))
+        return NULL;
+    count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, (int)size, NULL, 0);
+    if (!count)
+        return NULL;
+    name = allocate(((size_t)count + 1) * sizeof(wchar_t));
+    if (!name)
+        return NULL;
+    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, (int)size, name, count)) {
+        free(name);
+        return NULL;
+    }
+    name[count] = 0;
+    for (i = 0; i < (size_t)count; ++i)
+        if (name[i] == L'/')
+            name[i] = L'\\';
+    if (!valid_relative(name) || metadata_name(name)) {
+        free(name);
+        return NULL;
+    }
+    return name;
+}
+
+/* Unknown or malformed baselines never authorize destruction. */
+static BOOL parse_inventory(const Blob *blob, const char *source, Paths *paths)
+{
+    const char *line, *end, *next;
+    size_t i;
+    const char header[] = "ghidralaunch-inventory-v1\nsource=";
+    if (!blob->exists || blob->size < sizeof(header) - 1 + 65 ||
+        memchr(blob->data, 0, blob->size) ||
+        memcmp(blob->data, header, sizeof(header) - 1))
+        return FALSE;
+    line = blob->data + sizeof(header) - 1;
+    if (!lower_hash(line) || memcmp(line, source, 64) || line[64] != '\n')
+        return FALSE;
+    line += 65;
+    end = blob->data + blob->size;
+    while (line < end) {
+        wchar_t *name;
+        BOOL directory;
+        size_t prefix;
+        next = memchr(line, '\n', (size_t)(end - line));
+        if (!next)
+            return FALSE;
+        directory = *line == 'd';
+        prefix = directory ? 4 : 67;
+        if ((size_t)(next - line) <= prefix || line[1] != '\t' ||
+            (directory ? (line[2] != '-' || line[3] != '\t') :
+             (*line != 'f' || !lower_hash(line + 2) || line[66] != '\t')))
+            return FALSE;
+        name = inventory_name(line + prefix, (size_t)(next - line) - prefix);
+        if (!name)
+            return FALSE;
+        if (!add_path(paths, name, wcslen(name), directory, TRUE)) {
+            free(name);
+            return FALSE;
+        }
+        free(name);
+        if (!directory)
+            memcpy(paths->items[paths->count - 1].hash, line + 2, 64);
+        line = next + 1;
+    }
+    if (!sort_paths(paths))
+        return FALSE;
+    for (i = 0; i < paths->count; ++i) {
+        wchar_t *slash = wcsrchr(paths->items[i].name, L'\\');
+        if (slash) {
+            wchar_t *parent = copy_n(paths->items[i].name, (size_t)(slash - paths->items[i].name));
+            PathEntry *entry = parent ? find_path(paths, parent) : NULL;
+            BOOL valid = entry && entry->directory && !wcscmp(entry->name, parent);
+            free(parent);
+            if (!valid)
+                return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static BOOL write_inventory(const wchar_t *root, const char *source, const Paths *paths)
+{
+    wchar_t random[50], *temp = NULL, *target = join(root, INVENTORY);
+    HANDLE file = INVALID_HANDLE_VALUE;
+    size_t i;
+    BOOL ok = FALSE, created = FALSE;
+    const char header[] = "ghidralaunch-inventory-v1\nsource=";
+    if (!target || !random_name(random, L".marker-"))
+        goto done;
+    temp = join(root, random);
+    if (!temp)
+        goto done;
+    file = CreateFileW(temp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        win_error(L"Creating inventory", temp);
+        goto done;
+    }
+    created = TRUE;
+    if (!write_bytes(file, header, sizeof(header) - 1) ||
+        !write_bytes(file, source, 64) || !write_bytes(file, "\n", 1))
+        goto done;
+    for (i = 0; i < paths->count; ++i) {
+        const PathEntry *entry = &paths->items[i];
+        wchar_t *name = copy_n(entry->name, wcslen(entry->name));
+        char *utf8;
+        size_t j;
+        int bytes;
+        BOOL record_ok;
+        if (!name)
+            goto done;
+        for (j = 0; name[j]; ++j)
+            if (name[j] == L'\\')
+                name[j] = L'/';
+        bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name, -1, NULL, 0, NULL, NULL);
+        if (!bytes) {
+            win_error(L"Encoding inventory path as UTF-8", name);
+            free(name);
+            goto done;
+        }
+        utf8 = allocate((size_t)bytes);
+        if (!utf8) {
+            free(name);
+            goto done;
+        }
+        if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name, -1, utf8, bytes, NULL, NULL)) {
+            win_error(L"Encoding inventory path as UTF-8", name);
+            free(utf8);
+            free(name);
+            goto done;
+        }
+        free(name);
+        record_ok = entry->directory ? write_bytes(file, "d\t-\t", 4) :
+             (write_bytes(file, "f\t", 2) && write_bytes(file, entry->hash, 64) &&
+              write_bytes(file, "\t", 1));
+        record_ok = record_ok && write_bytes(file, utf8, (DWORD)bytes - 1) &&
+                    write_bytes(file, "\n", 1);
+        free(utf8);
+        if (!record_ok)
+            goto done;
+    }
+    ok = FALSE;
+    if (!FlushFileBuffers(file)) {
+        win_error(L"Flushing inventory", temp);
+        goto done;
+    }
+    if (!CloseHandle(file)) {
+        file = INVALID_HANDLE_VALUE;
+        win_error(L"Closing inventory", temp);
+        goto done;
+    }
+    file = INVALID_HANDLE_VALUE;
+    if (!MoveFileExW(temp, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        win_error(L"Committing inventory", target);
+        goto done;
+    }
+    ok = TRUE;
+done:
+    if (file != INVALID_HANDLE_VALUE)
+        CloseHandle(file);
+    if (!ok && created && !DeleteFileW(temp))
+        win_error(L"Cleaning temporary inventory", temp);
+    free(temp);
+    free(target);
+    return ok;
+}
+
+static BOOL customized(const Paths *baseline, const Paths *current, BOOL allow_missing)
+{
+    size_t i;
+    for (i = 0; i < current->count; ++i) {
+        const PathEntry *item = &current->items[i];
+        PathEntry *old = find_path(baseline, item->name);
+        if (!old || wcscmp(old->name, item->name) ||
+            old->directory != item->directory ||
+            (!item->directory && strcmp(old->hash, item->hash)))
+            return TRUE;
+    }
+    if (!allow_missing)
+        for (i = 0; i < baseline->count; ++i)
+            if (!find_path(current, baseline->items[i].name))
+                return TRUE;
+    return FALSE;
+}
+
+static BOOL capture_owner(const wchar_t *dest, const char *owner, OwnerRecord *record)
+{
+    HKEY key;
+    LSTATUS status;
+    DWORD size = 0;
+    memset(record, 0, sizeof(*record));
+    if (!owner || !manages_owner_record(dest))
+        return TRUE;
+    record->managed = TRUE;
+    status = RegOpenKeyExW(HKEY_CURRENT_USER, OWNER_KEY, 0, KEY_QUERY_VALUE, &key);
+    if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND)
+        return TRUE;
+    if (status != ERROR_SUCCESS)
+        goto failure;
+    status = RegQueryValueExW(key, OWNER_VALUE, NULL, &record->type, NULL, &size);
+    if (status == ERROR_FILE_NOT_FOUND) {
+        RegCloseKey(key);
+        return TRUE;
+    }
+    if (status == ERROR_SUCCESS) {
+        record->value.data = allocate((size_t)size + 1);
+        if (!record->value.data) {
+            RegCloseKey(key);
+            return FALSE;
+        }
+        status = RegQueryValueExW(key, OWNER_VALUE, NULL, &record->type,
+                                  (BYTE *)record->value.data, &size);
+        if (status == ERROR_SUCCESS) {
+            record->value.size = size;
+            record->value.exists = TRUE;
+        }
+    }
+    RegCloseKey(key);
+    if (status == ERROR_SUCCESS)
+        return TRUE;
+failure:
+    SetLastError((DWORD)status);
+    return win_error(L"Saving previous payload ownership", OWNER_KEY);
+}
+
+static BOOL restore_owner(const OwnerRecord *record)
+{
+    HKEY key;
+    LSTATUS status;
+    if (!record->managed)
+        return TRUE;
+    status = RegCreateKeyExW(HKEY_CURRENT_USER, OWNER_KEY, 0, NULL, REG_OPTION_NON_VOLATILE,
+                             KEY_SET_VALUE, NULL, &key, NULL);
+    if (status == ERROR_SUCCESS) {
+        status = record->value.exists ?
+            RegSetValueExW(key, OWNER_VALUE, 0, record->type,
+                           (const BYTE *)record->value.data, record->value.size) :
+            RegDeleteValueW(key, OWNER_VALUE);
+        if (!record->value.exists && status == ERROR_FILE_NOT_FOUND)
+            status = ERROR_SUCCESS;
+        RegCloseKey(key);
+    }
+    if (status != ERROR_SUCCESS) {
+        SetLastError((DWORD)status);
+        return win_error(L"ROLLBACK FAILED restoring previous registry ownership", OWNER_KEY);
+    }
+    return TRUE;
+}
+
+static BOOL copy_file_verified(const wchar_t *source, const wchar_t *target)
+{
+    HANDLE input = INVALID_HANDLE_VALUE, output = INVALID_HANDLE_VALUE;
+    unsigned char *buffer = NULL;
+    DWORD bytes, wrote;
+    char expected[65], actual[65];
+    BOOL ok = FALSE;
+    input = open_input(source);
+    if (input == INVALID_HANDLE_VALUE || !sha256(input, expected))
+        goto done;
+    {
+        LARGE_INTEGER zero;
+        zero.QuadPart = 0;
+        if (!SetFilePointerEx(input, zero, NULL, FILE_BEGIN)) {
+            win_error(L"Seeking preservation source", source);
+            goto done;
+        }
+    }
+    output = CreateFileW(target, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (output == INVALID_HANDLE_VALUE) {
+        win_error(L"Creating preservation copy", target);
+        goto done;
+    }
+    buffer = allocate(1024 * 1024);
+    if (!buffer)
+        goto done;
+    for (;;) {
+        if (!ReadFile(input, buffer, 1024 * 1024, &bytes, NULL)) {
+            win_error(L"Reading preservation source", source);
+            goto done;
+        }
+        if (!bytes)
+            break;
+        if (!WriteFile(output, buffer, bytes, &wrote, NULL) || wrote != bytes) {
+            win_error(L"Writing preservation copy", target);
+            goto done;
+        }
+    }
+    if (!FlushFileBuffers(output)) {
+        win_error(L"Flushing preservation copy", target);
+        goto done;
+    }
+    if (!sha256(output, actual) || strcmp(expected, actual)) {
+        problem(L"Preservation verification failed; original left intact", target);
+        goto done;
+    }
+    ok = TRUE;
+done:
+    free(buffer);
+    if (output != INVALID_HANDLE_VALUE)
+        CloseHandle(output);
+    if (input != INVALID_HANDLE_VALUE)
+        CloseHandle(input);
+    return ok;
+}
+
+static BOOL copy_tree_verified(const wchar_t *source, const wchar_t *target)
+{
+    HANDLE pin = INVALID_HANDLE_VALUE, search = INVALID_HANDLE_VALUE;
+    BY_HANDLE_FILE_INFORMATION info;
+    WIN32_FIND_DATAW data;
+    wchar_t *pattern = NULL;
+    BOOL ok = FALSE;
+    if (!directories(source, FALSE) || !CreateDirectoryW(target, NULL)) {
+        win_error(L"Preparing recovery copy", target);
+        goto done;
+    }
+    pin = CreateFileW(source, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                      NULL, OPEN_EXISTING,
+                      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (pin == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(pin, &info) ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        problem(L"Cannot safely pin recovery source; original left intact", source);
+        goto done;
+    }
+    pattern = join(source, L"*");
+    if (!pattern)
+        goto done;
+    search = FindFirstFileW(pattern, &data);
+    if (search == INVALID_HANDLE_VALUE) {
+        ok = GetLastError() == ERROR_FILE_NOT_FOUND;
+        if (!ok)
+            win_error(L"Enumerating recovery source", source);
+        goto done;
+    }
+    do {
+        wchar_t *from, *to;
+        ok = FALSE;
+        if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L".."))
+            continue;
+        from = join(source, data.cFileName);
+        to = join(target, data.cFileName);
+        if (!from || !to) {
+            free(from);
+            free(to);
+            goto done;
+        }
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+            ok = problem(L"Cannot preserve reparse point; original left intact", from);
+        } else if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            ok = copy_tree_verified(from, to);
+        } else {
+            ok = copy_file_verified(from, to);
+        }
+        free(from);
+        free(to);
+        if (!ok)
+            goto done;
+    } while (FindNextFileW(search, &data));
+    ok = GetLastError() == ERROR_NO_MORE_FILES;
+    if (!ok)
+        win_error(L"Continuing recovery enumeration", source);
+done:
+    if (search != INVALID_HANDLE_VALUE)
+        FindClose(search);
+    if (pin != INVALID_HANDLE_VALUE)
+        CloseHandle(pin);
+    free(pattern);
+    return ok;
+}
+
+static wchar_t *preserve_tree(const wchar_t *dest, const char *previous_source, const char *incoming_source)
+{
+    DWORD size;
+    wchar_t *local = NULL, *plain = NULL, *root = NULL, *operation = NULL, *tree = NULL;
+    char *utf8 = NULL, *summary = NULL;
+    size_t destination_length = wcslen(dest);
+#ifdef HELPER_TEST_RECOVERY_ROOT
+    const wchar_t *override = HELPER_TEST_RECOVERY_ROOT();
+    if (override && *override)
+        plain = copy_n(override, wcslen(override));
+    else
+#endif
+    {
+        size = GetEnvironmentVariableW(L"LOCALAPPDATA", NULL, 0);
+        if (!size) {
+            problem(L"LOCALAPPDATA is required for recovery; original left intact", dest);
+            goto done;
+        }
+        local = allocate((size_t)size * sizeof(wchar_t));
+        if (!local)
+            goto done;
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", local, size) != size - 1) {
+            problem(L"Cannot resolve recovery directory; original left intact", dest);
+            goto done;
+        }
+        plain = join(local, L"Ghidra Launch Recovery");
+    }
+    root = plain ? full_path(plain) : NULL;
+    if (!root)
+        goto done;
+    /* A recovery directory inside the tree being replaced would recurse. */
+    if (wcslen(root) >= destination_length && destination_length <= INT_MAX &&
+        CompareStringOrdinal(root, (int)destination_length, dest, (int)destination_length,
+                             TRUE) == CSTR_EQUAL &&
+        (!root[destination_length] || root[destination_length] == L'\\')) {
+        problem(L"Recovery directory must be outside destination", root);
+        goto done;
+    }
+    if (!directories(root, TRUE))
+        goto done;
+    operation = new_directory(root, L"recovery-");
+    tree = operation ? join(operation, L"tree") : NULL;
+    if (!tree || !copy_tree_verified(dest, tree)) {
+        if (operation)
+            problem(L"Recovery incomplete; original left intact, partial copy at", operation);
+        free(tree);
+        tree = NULL;
+        goto done;
+    }
+    {
+        int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, dest, -1, NULL, 0, NULL, NULL);
+        size_t capacity = bytes > 0 ? (size_t)bytes + 256 : 0;
+        int length;
+        Blob text = {0};
+        utf8 = bytes > 0 ? allocate((size_t)bytes) : NULL;
+        summary = capacity ? allocate(capacity) : NULL;
+        if (!utf8 || !summary ||
+            !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, dest, -1, utf8, bytes, NULL, NULL)) {
+            problem(L"Cannot record recovery summary; original left intact", operation);
+            free(tree);
+            tree = NULL;
+            goto done;
+        }
+        length = snprintf(summary, capacity,
+            "ghidralaunch-recovery-v1\ndestination=%s\nprevious-source=%s\nincoming-source=%s\ncontents=tree\n",
+            utf8, previous_source, incoming_source);
+        if (length < 0 || (size_t)length >= capacity) {
+            problem(L"Cannot format recovery summary; original left intact", operation);
+            free(tree);
+            tree = NULL;
+            goto done;
+        }
+        text.data = summary;
+        text.size = (DWORD)length;
+        text.exists = TRUE;
+        if (!write_blob(operation, L"recovery.txt", &text)) {
+            problem(L"Cannot persist recovery summary; original left intact", operation);
+            free(tree);
+            tree = NULL;
+            goto done;
+        }
+    }
+    wprintf(L"Preserved complete previous tree in recovery: %ls\n", tree);
+done:
+    free(summary);
+    free(utf8);
+    free(operation);
+    free(root);
+    free(plain);
+    free(local);
+    return tree;
+}
+
+static BOOL migrate_additions(const wchar_t *old, const wchar_t *stage,
+                             const Paths *baseline, const Paths *current, const Paths *upstream)
+{
+    size_t i;
+    for (i = 0; i < current->count; ++i) {
+        const PathEntry *entry = &current->items[i];
+        wchar_t *from = NULL, *to = NULL, *parent = NULL, *part = NULL;
+        size_t j;
+        BOOL conflict = FALSE, ok;
+        if (find_path(baseline, entry->name))
+            continue;
+        part = copy_n(entry->name, wcslen(entry->name));
+        if (!part)
+            return FALSE;
+        for (j = 0;; ++j) {
+            if (!part[j] || part[j] == L'\\') {
+                wchar_t saved = part[j];
+                PathEntry *packaged;
+                part[j] = 0;
+                packaged = find_path(upstream, part);
+                if (packaged && (!saved || !packaged->directory || wcscmp(packaged->name, part)))
+                    conflict = TRUE;
+                part[j] = saved;
+                if (!saved || conflict)
+                    break;
+            }
+        }
+        free(part);
+        if (conflict)
+            continue;
+        from = join(old, entry->name);
+        to = join(stage, entry->name);
+        parent = to ? parent_path(to) : NULL;
+        ok = from && to && parent && directories(parent, TRUE);
+        if (ok)
+            ok = entry->directory ? directories(to, TRUE) : copy_file_verified(from, to);
+        free(parent);
+        free(from);
+        free(to);
+        if (!ok)
+            return FALSE;
+    }
+    return TRUE;
+}
+
 static BOOL extract(const wchar_t *zip_path, const wchar_t *dest, const char *owner)
 {
     HANDLE file = INVALID_HANDLE_VALUE;
     mz_zip_archive zip = {0};
     LARGE_INTEGER length;
     Marker marker;
+    Blob old_marker = {0}, old_inventory = {0}, old_removal = {0}, staged_inventory = {0};
+    OwnerRecord previous_owner = {0};
+    Paths baseline = {0}, current = {0}, upstream = {0};
     char hash[65];
-    wchar_t *parent = NULL, *stage = NULL, *root = NULL, *backup = NULL;
+    wchar_t *parent = NULL, *stage = NULL, *root = NULL, *backup = NULL, *recovery = NULL;
     BOOL ok = FALSE, initialized = FALSE, backed_up = FALSE, installed = FALSE;
+    BOOL existing = FALSE, same = FALSE, trusted = FALSE, committed = FALSE;
+    BOOL adoption_changed = FALSE, registry_attempted = FALSE, owner_saved = FALSE;
     DWORD attr;
     int state;
     if (!safe_destination(dest))
@@ -967,15 +1793,27 @@ static BOOL extract(const wchar_t *zip_path, const wchar_t *dest, const char *ow
     state = read_marker(dest, &marker);
     if (state < 0)
         goto done;
-    if (state == 1 && !strcmp(marker.hash, hash)) {
-        if (owner && strcmp(owner, marker.owner) && !write_marker(dest, hash, owner))
-            goto done;
-        if (owner && !set_owner_record(dest, owner))
-            goto done;
-        wprintf(L"Ghidra already extracted at %ls (unchanged); skipping.\n", dest);
-        ok = TRUE;
+    attr = GetFileAttributesW(dest);
+    if (attr == INVALID_FILE_ATTRIBUTES && !absent(GetLastError())) {
+        win_error(L"Inspecting extraction destination", dest);
         goto done;
     }
+    existing = attr != INVALID_FILE_ATTRIBUTES;
+    if (existing) {
+        if (!read_blob(dest, MARKER, &old_marker) ||
+            !read_blob(dest, INVENTORY, &old_inventory) ||
+            !read_blob(dest, REMOVAL, &old_removal))
+            goto done;
+        trusted = state == 1 && parse_inventory(&old_inventory, marker.hash, &baseline);
+        if (!trusted)
+            free_paths(&baseline);
+        same = state == 1 && !strcmp(marker.hash, hash) && !old_removal.exists;
+    }
+    if (!capture_owner(dest, owner, &previous_owner))
+        goto done;
+    owner_saved = TRUE;
+    if (same && trusted)
+        goto adopt;
     parent = parent_path(dest);
     if (!parent || !directories(parent, TRUE))
         goto done;
@@ -996,8 +1834,29 @@ static BOOL extract(const wchar_t *zip_path, const wchar_t *dest, const char *ow
     if (!validate_archive(&zip) || !unpack(&zip, stage))
         goto done;
     root = source_root(stage);
-    if (!root || !write_marker(root, hash, owner))
+    if (!root || !scan_tree(root, L"", &upstream, TRUE) ||
+        !sort_paths(&upstream) || !write_inventory(root, hash, &upstream) ||
+        !write_marker(root, hash, owner))
         goto done;
+    if (same) {
+        if (!read_blob(root, INVENTORY, &staged_inventory))
+            goto done;
+        adoption_changed = TRUE;
+        if (!write_blob(dest, INVENTORY, &staged_inventory))
+            goto done;
+        goto adopt;
+    }
+    if (existing) {
+        if (!scan_tree(dest, L"", &current, FALSE) || !sort_paths(&current))
+            goto done;
+        if (!trusted || customized(&baseline, &current, FALSE)) {
+            recovery = preserve_tree(dest, state == 1 ? marker.hash : "unknown", hash);
+            if (!recovery)
+                goto done;
+            if (trusted && !migrate_additions(dest, root, &baseline, &current, &upstream))
+                goto done;
+        }
+    }
     if (!safe_destination(dest))
         goto done;
     attr = GetFileAttributesW(dest);
@@ -1023,15 +1882,48 @@ static BOOL extract(const wchar_t *zip_path, const wchar_t *dest, const char *ow
         goto done;
     }
     installed = TRUE;
-    if (owner && !set_owner_record(dest, owner))
-        goto done;
+    if (owner) {
+        registry_attempted = TRUE;
+        if (!set_owner_record(dest, owner))
+            goto done;
+    }
+    committed = TRUE;
     ok = TRUE;
+    goto done;
+adopt:
+    if (owner && strcmp(owner, marker.owner)) {
+        adoption_changed = TRUE;
+        if (!write_marker(dest, hash, owner))
+            goto done;
+    }
+    if (owner) {
+        registry_attempted = TRUE;
+        if (!set_owner_record(dest, owner))
+            goto done;
+    }
+    committed = TRUE;
+    ok = TRUE;
+    wprintf(L"Ghidra already extracted at %ls (unchanged); skipping.\n", dest);
 done:
     if (initialized)
         mz_zip_reader_end(&zip);
     if (file != INVALID_HANDLE_VALUE)
         CloseHandle(file);
-    if (backed_up && !installed) {
+    if (!committed && adoption_changed) {
+        BOOL marker_restored = restore_metadata(dest, MARKER, &old_marker);
+        BOOL inventory_restored = restore_metadata(dest, INVENTORY, &old_inventory);
+        if (!marker_restored || !inventory_restored)
+            problem(L"ROLLBACK FAILED restoring adoption metadata; destination retained", dest);
+    }
+    if (!committed && installed) {
+        if (!MoveFileExW(dest, root, MOVEFILE_WRITE_THROUGH)) {
+            win_error(L"ROLLBACK FAILED moving uncommitted extraction; original remains at backup",
+                      backup ? backup : dest);
+        } else {
+            installed = FALSE;
+        }
+    }
+    if (!committed && backed_up && !installed) {
         if (!MoveFileExW(backup, dest, MOVEFILE_WRITE_THROUGH)) {
             win_error(L"ROLLBACK FAILED; original remains at backup", backup);
             ok = FALSE;
@@ -1039,20 +1931,36 @@ done:
             backed_up = FALSE;
         }
     }
-    if (backed_up && installed && !remove_tree(backup)) {
-        problem(L"Installed successfully, but backup cleanup failed", backup);
+    if (!committed && owner_saved && registry_attempted && !restore_owner(&previous_owner))
         ok = FALSE;
+    if (backed_up && committed && !remove_tree(backup)) {
+        problem(L"WARNING: Installation committed; backup cleanup failed; residual backup", backup);
+    } else if (backed_up && committed) {
+        backed_up = FALSE;
     }
     if (backup && !backed_up && !remove_tree(backup)) {
-        problem(L"Unused backup directory cleanup failed", backup);
-        ok = FALSE;
+        problem(committed ? L"WARNING: Installation committed; residual unused backup directory" :
+                            L"Unused backup directory cleanup failed", backup);
+        if (!committed)
+            ok = FALSE;
     }
     if (stage && !remove_tree(stage)) {
-        problem(L"Staging cleanup failed", stage);
-        ok = FALSE;
+        problem(committed ? L"WARNING: Installation committed; residual staging directory" :
+                            L"Staging cleanup failed", stage);
+        if (!committed)
+            ok = FALSE;
     }
     if (ok && installed)
         wprintf(L"Extracted Ghidra to %ls.\n", dest);
+    free_paths(&upstream);
+    free_paths(&current);
+    free_paths(&baseline);
+    free(previous_owner.value.data);
+    free(old_marker.data);
+    free(old_inventory.data);
+    free(old_removal.data);
+    free(staged_inventory.data);
+    free(recovery);
     free(backup);
     free(root);
     free(stage);
@@ -1060,17 +1968,156 @@ done:
     return ok;
 }
 
+static BOOL remove_payload(const wchar_t *dest)
+{
+    HANDLE pin, search = INVALID_HANDLE_VALUE;
+    BY_HANDLE_FILE_INFORMATION info;
+    WIN32_FIND_DATAW data;
+    wchar_t *pattern = NULL;
+    BOOL ok = FALSE;
+    pin = CreateFileW(dest, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                      NULL, OPEN_EXISTING,
+                      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (pin == INVALID_HANDLE_VALUE)
+        return win_error(L"Opening authorized removal directory", dest);
+    if (!GetFileInformationByHandle(pin, &info) ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        problem(L"Removal directory changed to a reparse point", dest);
+        goto done;
+    }
+    pattern = join(dest, L"*");
+    if (!pattern)
+        goto done;
+    search = FindFirstFileW(pattern, &data);
+    if (search == INVALID_HANDLE_VALUE) {
+        ok = GetLastError() == ERROR_FILE_NOT_FOUND;
+        if (!ok)
+            win_error(L"Enumerating authorized removal directory", dest);
+        goto done;
+    }
+    do {
+        wchar_t *child;
+        ok = FALSE;
+        if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L"..") ||
+            metadata_name(data.cFileName))
+            continue;
+        child = join(dest, data.cFileName);
+        if (!child)
+            goto done;
+        ok = remove_tree(child);
+        free(child);
+        if (!ok)
+            goto done;
+    } while (FindNextFileW(search, &data));
+    ok = GetLastError() == ERROR_NO_MORE_FILES;
+    if (!ok)
+        win_error(L"Continuing authorized removal enumeration", dest);
+done:
+    if (search != INVALID_HANDLE_VALUE)
+        FindClose(search);
+    CloseHandle(pin);
+    free(pattern);
+    return ok;
+}
+
+static BOOL restore_metadata(const wchar_t *dest, const wchar_t *name, const Blob *original)
+{
+    Blob current = {0};
+    BOOL identical = read_blob(dest, name, &current) && current.exists == original->exists &&
+        current.size == original->size &&
+        (!original->size || !memcmp(current.data, original->data, original->size));
+    free(current.data);
+    return identical || write_blob(dest, name, original);
+}
+
+static BOOL finish_removal(const wchar_t *dest, const Blob *marker,
+                           const Blob *inventory, const Blob *removal)
+{
+    const wchar_t *names[] = {MARKER, INVENTORY, REMOVAL};
+    size_t i;
+    DWORD attr;
+    HANDLE pin;
+    BY_HANDLE_FILE_INFORMATION info;
+    BOOL ok = TRUE;
+    pin = CreateFileW(dest, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                      NULL, OPEN_EXISTING,
+                      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (pin == INVALID_HANDLE_VALUE)
+        return win_error(L"Pinning final removal directory", dest);
+    if (!GetFileInformationByHandle(pin, &info) ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        CloseHandle(pin);
+        return problem(L"Final removal directory is no longer an ordinary directory", dest);
+    }
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        wchar_t *path = join(dest, names[i]);
+        ok = path && remove_tree(path);
+        free(path);
+        if (!ok)
+            break;
+    }
+    if (ok) {
+        attr = GetFileAttributesW(dest);
+        if (attr == INVALID_FILE_ATTRIBUTES ||
+            ((attr & FILE_ATTRIBUTE_READONLY) &&
+             !SetFileAttributesW(dest, attr & ~FILE_ATTRIBUTE_READONLY))) {
+            win_error(L"Preparing final removal directory", dest);
+            ok = FALSE;
+        }
+    }
+    CloseHandle(pin);
+    if (ok) {
+        if (!RemoveDirectoryW(dest)) {
+            win_error(L"Removing authorized destination root", dest);
+            ok = FALSE;
+        }
+    }
+    if (!ok) {
+        BOOL a, b, c;
+        if (!directories(dest, FALSE))
+            return problem(L"Cannot safely restore removal metadata; directory changed", dest);
+        pin = CreateFileW(dest, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                          NULL, OPEN_EXISTING,
+                          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        if (pin == INVALID_HANDLE_VALUE)
+            return win_error(L"Pinning removal recovery directory", dest);
+        if (!GetFileInformationByHandle(pin, &info) ||
+            (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            CloseHandle(pin);
+            return problem(L"Cannot safely restore metadata into changed directory", dest);
+        }
+        a = restore_metadata(dest, MARKER, marker);
+        b = restore_metadata(dest, INVENTORY, inventory);
+        c = restore_metadata(dest, REMOVAL, removal);
+        CloseHandle(pin);
+        if (!a || !b || !c)
+            problem(L"REMOVAL RECOVERY FAILED restoring retry metadata; directory retained", dest);
+    }
+    return ok;
+}
+
+static BOOL retain_destination(const wchar_t *dest, const char *owner, const wchar_t *reason)
+{
+    wprintf(L"Retained %ls; %ls.\n", dest, reason);
+    return !owner || clear_owner_record(dest, owner);
+}
+
 static BOOL remove_destination(const wchar_t *dest, const wchar_t *zip_path, const char *owner)
 {
     Marker marker;
+    Blob marker_blob = {0}, inventory_blob = {0}, removal_blob = {0}, authorization = {0};
+    Paths baseline = {0}, current = {0};
+    char removal_text[320];
+    int text_size;
     int state;
     DWORD attr;
+    BOOL ok = FALSE, retry = FALSE;
     if (!safe_destination(dest))
         return FALSE;
     attr = GetFileAttributesW(dest);
     if (attr == INVALID_FILE_ATTRIBUTES) {
         if (absent(GetLastError()))
-            return TRUE;
+            return !owner || clear_owner_record(dest, owner);
         return win_error(L"Inspecting removal destination", dest);
     }
     if (zip_path) {
@@ -1108,12 +2155,91 @@ static BOOL remove_destination(const wchar_t *dest, const wchar_t *zip_path, con
             return TRUE;
         }
     }
-    if (!remove_tree(dest))
-        return FALSE;
+    if (state != 1) {
+        ok = retain_destination(dest, owner, L"source baseline is unavailable");
+        goto done;
+    }
+    if (!read_blob(dest, MARKER, &marker_blob) ||
+        !read_blob(dest, INVENTORY, &inventory_blob) ||
+        !read_blob(dest, REMOVAL, &removal_blob) ||
+        !parse_inventory(&inventory_blob, marker.hash, &baseline)) {
+        ok = retain_destination(dest, owner, L"upstream inventory is unavailable or invalid");
+        goto done;
+    }
+    text_size = snprintf(removal_text, sizeof(removal_text),
+                         "ghidralaunch-removal-v1\nsource=%s\nowner=%s\n",
+                         marker.hash, marker.owner);
+    if (text_size < 0 || (size_t)text_size >= sizeof(removal_text)) {
+        problem(L"Cannot format removal authorization", dest);
+        goto done;
+    }
+    authorization.data = removal_text;
+    authorization.size = (DWORD)text_size;
+    authorization.exists = TRUE;
+    if (removal_blob.exists) {
+        retry = removal_blob.size == authorization.size &&
+                !memcmp(removal_blob.data, authorization.data, authorization.size);
+        if (!retry) {
+            ok = retain_destination(dest, owner, L"removal authorization does not match");
+            goto done;
+        }
+    }
+    if (!scan_tree(dest, L"", &current, FALSE) || !sort_paths(&current) ||
+        customized(&baseline, &current, retry)) {
+        ok = retain_destination(dest, owner, L"user customizations or unsafe entries were detected");
+        goto done;
+    }
+    if (!retry && !write_blob(dest, REMOVAL, &authorization))
+        goto done;
+    if (!remove_payload(dest) ||
+        !finish_removal(dest, &marker_blob, &inventory_blob, &authorization))
+        goto done;
     if (owner && !clear_owner_record(dest, owner))
-        return FALSE;
+        goto done;
     wprintf(L"Removed %ls.\n", dest);
-    return TRUE;
+    ok = TRUE;
+done:
+    free(marker_blob.data);
+    free(inventory_blob.data);
+    free(removal_blob.data);
+    free_paths(&baseline);
+    free_paths(&current);
+    return ok;
+}
+
+static HANDLE destination_lock(const wchar_t *dest)
+{
+    const wchar_t suffix[] = L".ghidralaunch.lock";
+    size_t n = wcslen(dest);
+    wchar_t *path = NULL, *parent = NULL;
+    HANDLE lock = INVALID_HANDLE_VALUE;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!safe_destination(dest))
+        return INVALID_HANDLE_VALUE;
+    parent = parent_path(dest);
+    if (!parent || !directories(parent, TRUE))
+        goto done;
+    if (n > SIZE_MAX / sizeof(wchar_t) - sizeof(suffix) / sizeof(suffix[0]))
+        goto done;
+    path = allocate(n * sizeof(wchar_t) + sizeof(suffix));
+    if (!path)
+        goto done;
+    memcpy(path, dest, n * sizeof(wchar_t));
+    memcpy(path + n, suffix, sizeof(suffix));
+    lock = CreateFileW(path, GENERIC_READ | GENERIC_WRITE | DELETE, 0, NULL, OPEN_ALWAYS,
+                       FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (lock == INVALID_HANDLE_VALUE) {
+        win_error(L"Cannot acquire destination lock (another helper may be operating)", path);
+    } else if (!GetFileInformationByHandle(lock, &info) ||
+               (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+        problem(L"Destination lock must be an ordinary file", path);
+        CloseHandle(lock);
+        lock = INVALID_HANDLE_VALUE;
+    }
+done:
+    free(parent);
+    free(path);
+    return lock;
 }
 
 int wmain(int argc, wchar_t **argv)
@@ -1122,6 +2248,7 @@ int wmain(int argc, wchar_t **argv)
     char owner[129];
     const char *owner_arg = NULL;
     wchar_t *dest, *zip = NULL;
+    HANDLE lock;
     extracting = argc >= 2 && !_wcsicmp(argv[1], L"extract");
     removing = argc >= 2 && !_wcsicmp(argv[1], L"remove");
     if ((!extracting && !removing) || (extracting && argc != 4 && argc != 5) ||
@@ -1144,7 +2271,11 @@ int wmain(int argc, wchar_t **argv)
             return 1;
         }
     }
-    ok = extracting ? extract(zip, dest, owner_arg) : remove_destination(dest, zip, owner_arg);
+    lock = destination_lock(dest);
+    ok = lock != INVALID_HANDLE_VALUE &&
+        (extracting ? extract(zip, dest, owner_arg) : remove_destination(dest, zip, owner_arg));
+    if (lock != INVALID_HANDLE_VALUE)
+        CloseHandle(lock);
     free(zip);
     free(dest);
     return ok ? 0 : 1;

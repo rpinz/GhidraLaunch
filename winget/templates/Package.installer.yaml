@@ -2,6 +2,7 @@ PackageIdentifier: rpinz.GhidraLaunch{{Variant}}
 PackageVersion: {{Version}}
 InstallerType: burn
 Scope: user
+MinimumOSVersion: 10.0.17763.0
 InstallModes:
 - interactive
 - silent

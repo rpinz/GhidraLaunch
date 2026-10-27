@@ -27,7 +27,13 @@
     <Property Id="ALLUSERS" Secure="yes" />
     <Launch Condition="NOT ALLUSERS"
             Message="Ghidra Launch is a per-user application; ALLUSERS is not allowed." />
-    <Launch Condition="VersionNT64" Message="Ghidra Launch requires 64-bit Windows." />
+    <Property Id="WINDOWSBUILD" Secure="yes">
+      <RegistrySearch Id="WindowsBuildSearch" Root="HKLM"
+                      Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentBuildNumber" Type="raw" Bitness="always64" />
+    </Property>
+    <Launch Condition="Installed OR (VersionNT64 AND WINDOWSBUILD >= 17763)"
+            Message="Ghidra Launch requires Windows 10 version 1809 or newer, or Windows 11 (64-bit)." />
     <Feature Id="ProductFeature" Title="Ghidra Launch" Level="1">
       <ComponentGroupRef Id="LauncherComponents" />
       <ComponentRef Id="ApplicationShortcut" />

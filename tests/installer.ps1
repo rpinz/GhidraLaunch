@@ -40,6 +40,14 @@ if ($ExpectedVersion -and $properties['ProductVersion'] -ne $ExpectedVersion) {
 if ($properties['UpgradeCode'] -ne '{E0958D3F-13B8-4707-9E18-D7CBC2625E71}') {
     throw 'MSI lost the legacy upgrade family'
 }
+$windowsSearch = @(Read-Rows 'SELECT `Key`, `Name`, `Type` FROM `RegLocator` WHERE `Signature_` = ''WindowsBuildSearch''' 3)
+if ($windowsSearch.Count -ne 1 -or $windowsSearch[0].Column1 -ne 'SOFTWARE\Microsoft\Windows NT\CurrentVersion' -or
+    $windowsSearch[0].Column2 -ne 'CurrentBuildNumber' -or ([int]$windowsSearch[0].Column3 -band 16) -eq 0) {
+    throw 'MSI must detect the actual Windows build through the 64-bit registry view'
+}
+$windowsCondition = @(Read-Rows 'SELECT `Condition` FROM `LaunchCondition`' 1 |
+    Where-Object { $_.Column1 -eq 'Installed OR (VersionNT64 AND WINDOWSBUILD >= 17763)' })
+if ($windowsCondition.Count -ne 1) { throw 'MSI must require Windows 10 1809+ x64 while permitting installed-product maintenance' }
 
 $launcher = if ($Variant -eq 'C') { 'GhidraLaunchC.exe' } else { 'GhidraLaunchRS.exe' }
 $files = @(Read-Rows 'SELECT `File`.`FileName`, `Component`.`Directory_` FROM `File`, `Component` WHERE `File`.`Component_` = `Component`.`Component`' 2)

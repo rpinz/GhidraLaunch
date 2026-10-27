@@ -115,7 +115,7 @@ if (Download-Verified 'Latest Ghidra' $asset.browser_download_url $ghidraChecksu
             $archive.Dispose()
         }
 
-        $versionMatch = [regex]::Match($properties, '(?m)^application\.java\.min=([^=\r\n]*)')
+        $versionMatch = [regex]::Match($properties, '(?m)^application\.java\.min=([^\r\n]*)')
         $javaVersion = $versionMatch.Groups[1].Value -replace '\s', ''
         if (-not $versionMatch.Success -or $javaVersion -notmatch '^[0-9]+$') {
             throw 'Ghidra Java requirement is missing or invalid'

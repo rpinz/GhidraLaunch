@@ -20,17 +20,22 @@ jobs:
       - name: Restore pinned WiX v5 tooling
         shell: pwsh
         run: dotnet tool restore
+      - name: Restore pinned Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
       - name: Build and rebuild native executables
         shell: pwsh
         run: |
           ./scripts/build.ps1 -Configuration ${{ matrix.configuration }}
           ./scripts/build.ps1 -Configuration ${{ matrix.configuration }} -Rebuild
-          cargo fmt --manifest-path GhidraLaunchGhidraHelperRS/Cargo.toml --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --manifest-path GhidraLaunchGhidraHelperRS/Cargo.toml --locked
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo clippy --manifest-path GhidraLaunchGhidraHelperRS/Cargo.toml --locked -- -D warnings
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($manifest in @('GhidraLaunchRS\Cargo.toml', 'GhidraLaunchGhidraHelperRS\Cargo.toml')) {
+            cargo fmt --manifest-path $manifest --check
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo test --manifest-path $manifest --locked
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo clippy --manifest-path $manifest --locked -- -D warnings
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Exercise both launchers
         shell: pwsh
         run: ./tests/launchers.ps1 -Configuration ${{ matrix.configuration }}

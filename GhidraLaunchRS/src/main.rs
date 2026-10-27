@@ -14,6 +14,7 @@ use std::process::{exit, Command, Stdio};
 use std::time::Duration;
 use windows_sys::{
     Win32::Globalization::{MultiByteToWideChar, CP_ACP},
+    Win32::System::Environment::GetCommandLineW,
     Win32::System::SystemInformation::GetSystemDirectoryW,
     Win32::System::Threading::CREATE_NO_WINDOW,
     Win32::UI::WindowsAndMessaging::MessageBoxW,
@@ -168,7 +169,7 @@ fn env_text(name: &str) -> Option<String> {
 
 // Start Ghidra the way ghidraRun.bat and support\launch.bat do, without cmd.exe.
 // Returns None when that is not possible so the caller can fall back to ghidraRun.bat.
-fn launch_native(directory: &Path) -> Option<i32> {
+fn launch_native(directory: &Path, jdk_error: &mut bool) -> Option<i32> {
     // launch.bat rejects '!' in the path and a trailing backslash would escape the quotes below
     let text = directory.to_string_lossy();
     if text.ends_with('\\') || text.contains('!') {
@@ -184,19 +185,20 @@ fn launch_native(directory: &Path) -> Option<i32> {
         return None;
     }
 
-    // LaunchSupport picks and remembers a supported JDK; ask the user when none is known yet
-    let java = find_java(directory)?;
-    let mut home = launch_support(&java, directory, "-jdk_home -save", true)
+    let Some(java) = find_java(directory) else {
+        *jdk_error = true;
+        return None;
+    };
+    let home = launch_support(&java, directory, "-jdk_home -save", true)
         .and_then(|lines| lines.last().cloned());
-    if home.is_none() {
-        launch_support(&java, directory, "-jdk_home -ask", false)?;
-        home = launch_support(&java, directory, "-jdk_home -save", true)
-            .and_then(|lines| lines.last().cloned());
-    }
-    let home = PathBuf::from(home?);
+    let Some(home) = home.map(PathBuf::from) else {
+        *jdk_error = true;
+        return None;
+    };
     let java = home.join("bin").join("java.exe");
     let javaw = home.join("bin").join("javaw.exe");
     if !java.is_file() || !javaw.is_file() {
+        *jdk_error = true;
         return None;
     }
 
@@ -247,6 +249,31 @@ fn launch_native(directory: &Path) -> Option<i32> {
     Some(EXIT_SUCCESS)
 }
 
+fn raw_arguments() -> OsString {
+    let command = unsafe {
+        let pointer = GetCommandLineW();
+        let mut length = 0;
+        while *pointer.add(length) != 0 {
+            length += 1;
+        }
+        std::slice::from_raw_parts(pointer, length)
+    };
+    let mut index = 0;
+    let mut quoted = false;
+    while index < command.len() {
+        if command[index] == b'"' as u16 {
+            quoted = !quoted;
+        } else if !quoted && matches!(command[index], 9 | 32) {
+            break;
+        }
+        index += 1;
+    }
+    while index < command.len() && matches!(command[index], 9 | 32) {
+        index += 1;
+    }
+    OsString::from_wide(&command[index..])
+}
+
 // launch ghidraRun.bat and return the exit code
 fn launch() -> i32 {
     // use GHIDRA_HOME when set, otherwise look next to the launcher
@@ -268,13 +295,21 @@ fn launch() -> i32 {
     };
 
     // start Ghidra directly; fall back to ghidraRun.bat when that is not possible
-    match launch_native(&directory) {
+    let mut jdk_error = false;
+    match launch_native(&directory, &mut jdk_error) {
         Some(EXIT_SUCCESS) => return EXIT_SUCCESS,
         Some(code) => {
             show_error("Ghidra exited with code", code as u32);
             return code;
         }
         None => {}
+    }
+    if jdk_error {
+        show_error(
+            "No supported JDK could be selected. Set JAVA_HOME to a supported 64-bit JDK and restart Ghidra Launch. For manual selection, run ghidraRun.bat from a command prompt. Error",
+            EXIT_FAILURE,
+        );
+        return EXIT_FAILURE;
     }
 
     // the fallback needs ghidraRun.bat
@@ -298,39 +333,18 @@ fn launch() -> i32 {
     let mut directory_units = directory.as_os_str().encode_wide();
     let unc = directory_units.next() == Some(b'\\' as u16)
         && directory_units.next() == Some(b'\\' as u16);
-    let percent = directory
-        .as_os_str()
-        .encode_wide()
-        .any(|unit| unit == b'%' as u16);
-    let mut arguments = OsString::from("/d /c ");
-    if unc && percent {
-        arguments = OsString::from("/d /v:on /c \"\"");
-        // delayed expansion inserts these characters after cmd's percent-expansion pass
-        for unit in directory.join(BATCH_FILE).as_os_str().encode_wide() {
-            match unit {
-                x if x == b'%' as u16 => arguments.push("!GL_P!"),
-                x if x == b'!' as u16 => arguments.push("!GL_B!"),
-                x if x == b'^' as u16 => arguments.push("!GL_C!"),
-                _ => arguments.push(OsString::from_wide(&[unit])),
-            }
-        }
-        arguments.push("\"\"");
-    } else if unc {
-        arguments = OsString::from("/d /c \"\"");
-        arguments.push(directory.join(BATCH_FILE));
-        arguments.push("\"\"");
+    let batch = if unc {
+        directory.join(BATCH_FILE)
     } else {
-        arguments.push(r".\");
-        arguments.push(BATCH_FILE);
-    }
+        PathBuf::from(r".\ghidraRun.bat")
+    };
 
     // create process and wait for child to infinity and beyond
     let mut command = Command::new(cmd);
-    if unc && percent {
-        command.env("GL_P", "%").env("GL_B", "!").env("GL_C", "^");
-    }
     let status = command
-        .raw_arg(arguments)
+        .env("GL_BATCH", batch)
+        .env("GL_ARGS", raw_arguments())
+        .raw_arg("/d /v:on /s /c \"\"!GL_BATCH!\" !GL_ARGS!\"")
         .current_dir(&directory)
         .creation_flags(CREATE_NO_WINDOW)
         .status();

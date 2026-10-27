@@ -25,6 +25,7 @@ PEER_EXE = os.environ.get("C_HELPER_PEER_EXE")
 ARTIFACTS = os.environ.get("C_HELPER_TEST_ROOT")
 WINDOWS = sys.platform == "win32"
 MARKER = ".ghidralaunch-source.sha256"
+INVENTORY = ".ghidralaunch-inventory"
 
 
 class CHelperTests(unittest.TestCase):
@@ -52,11 +53,15 @@ class CHelperTests(unittest.TestCase):
         return [self.wine, exe, *map(wine_arg, args)]
 
     def run_helper(self, *args, code=0):
-        result = subprocess.run(self.command(*args), capture_output=True, timeout=90)
+        result = subprocess.run(self.command(*args), capture_output=True, timeout=90,
+                                env=self.environment())
         self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         if code:
             self.assertTrue(result.stderr, "failure must have stderr diagnostics")
         return result
+
+    def environment(self):
+        return {**os.environ, "LOCALAPPDATA": str(self.root / "profile")}
 
     def archive(self, entries=None, compression=zipfile.ZIP_DEFLATED, path=None):
         path = path or self.zip
@@ -77,8 +82,9 @@ class CHelperTests(unittest.TestCase):
         return (self.dest / MARKER).read_bytes()
 
     def assert_no_staging(self):
-        self.assertFalse(list(self.root.glob(".extract-*")))
-        self.assertFalse(list(self.root.glob(".old-*")))
+        for pattern in (".extract-*", ".old-*", "destination.extract-*",
+                        "destination.ready-*", "destination.old-*"):
+            self.assertFalse(list(self.root.glob(pattern)), pattern)
 
     def test_usage_and_owner_validation(self):
         for args in [(), ("bad",), ("extract",), ("remove",),
@@ -150,6 +156,9 @@ class CHelperTests(unittest.TestCase):
         self.run_helper("extract", self.zip, self.dest)
         self.assertTrue(self.marker().endswith(b"owner=1.2.3-Rust\n"))
         self.run_helper("remove", self.dest, self.zip, "1.2.3-Rust")
+        self.assertEqual((self.dest / "support/x.txt").read_bytes(), b"user change")
+        (self.dest / "support/x.txt").write_bytes(b"first")
+        self.run_helper("remove", self.dest, self.zip, "1.2.3-Rust")
         self.assertFalse(self.dest.exists())
 
     def test_legacy_marker_owner_upgrade_and_first_line_hash(self):
@@ -160,6 +169,9 @@ class CHelperTests(unittest.TestCase):
         self.run_helper("extract", self.zip, self.dest, "Release-C")
         self.assertEqual((self.dest / "ghidraRun.bat").read_bytes(), b"untouched")
         self.assertEqual(self.marker(), (self.hash() + "\nowner=Release-C\n").encode())
+        self.run_helper("remove", self.dest, self.zip, "Release-C")
+        self.assertTrue(self.dest.exists())
+        (self.dest / "ghidraRun.bat").write_bytes(b"run")
         self.run_helper("remove", self.dest, self.zip, "Release-C")
         self.assertFalse(self.dest.exists())
 
@@ -206,13 +218,165 @@ class CHelperTests(unittest.TestCase):
         self.run_helper("remove", self.dest, self.root / "missing.zip")
         self.assertTrue(self.dest.exists())
         (self.dest / MARKER).rmdir()
-        self.run_helper("remove", self.dest)
-        self.assertFalse(self.dest.exists())
+        self.assertIn(b"Retained", self.run_helper("remove", self.dest).stdout)
+        self.assertTrue(self.dest.exists())
 
-    def test_missing_and_empty_remove_success(self):
+    def test_missing_remove_success_and_unknown_empty_tree_retained(self):
         self.run_helper("remove", self.dest)
         self.dest.mkdir()
-        self.run_helper("remove", self.dest)
+        self.assertIn(b"Retained", self.run_helper("remove", self.dest).stdout)
+        self.assertTrue(self.dest.exists())
+
+    def test_customized_uninstall_retains_whole_tree(self):
+        for customization in ("addition", "edit", "deletion", "directory"):
+            with self.subTest(customization=customization):
+                self.archive()
+                self.run_helper("extract", self.zip, self.dest, "owner")
+                if customization == "addition":
+                    (self.dest / "custom.txt").write_bytes(b"user addition")
+                elif customization == "edit":
+                    (self.dest / "support/x.txt").write_bytes(b"user edit")
+                elif customization == "deletion":
+                    (self.dest / "support/x.txt").unlink()
+                else:
+                    (self.dest / "custom-empty").mkdir()
+                marker = self.marker()
+                self.assertIn(b"Retained", self.run_helper("remove", self.dest, self.zip, "owner").stdout)
+                self.assertTrue((self.dest / "ghidraRun.bat").exists())
+                self.assertEqual(self.marker(), marker)
+                shutil.rmtree(self.dest)
+
+    def test_upgrade_carries_additions_and_recovers_edits_and_conflicts(self):
+        self.archive()
+        self.run_helper("extract", self.zip, self.dest, "old")
+        (self.dest / "support/x.txt").write_bytes(b"edited upstream")
+        (self.dest / "custom.txt").write_bytes(b"added")
+        (self.dest / "conflict.txt").write_bytes(b"user collision")
+        (self.dest / "empty-added").mkdir()
+        self.archive([("bundle/ghidraRun.bat", b"new run"),
+                      ("bundle/support/x.txt", b"new upstream"),
+                      ("bundle/conflict.txt", b"new packaged")])
+        self.run_helper("extract", self.zip, self.dest, "new")
+        self.assertEqual((self.dest / "support/x.txt").read_bytes(), b"new upstream")
+        self.assertEqual((self.dest / "conflict.txt").read_bytes(), b"new packaged")
+        self.assertEqual((self.dest / "custom.txt").read_bytes(), b"added")
+        self.assertTrue((self.dest / "empty-added").is_dir())
+        recovery = self.root / "profile" / "Ghidra Launch Recovery"
+        self.assertTrue(any(path.read_bytes() == b"edited upstream" for path in recovery.rglob("x.txt")))
+        self.assertTrue(any(path.read_bytes() == b"user collision" for path in recovery.rglob("conflict.txt")))
+        self.assertIn(b"Retained", self.run_helper("remove", self.dest, self.zip, "new").stdout)
+        self.assert_no_staging()
+
+    def test_unknown_inventory_preserves_full_previous_tree_on_upgrade(self):
+        self.archive()
+        self.run_helper("extract", self.zip, self.dest)
+        (self.dest / INVENTORY).write_bytes(b"not an inventory")
+        (self.dest / "custom.txt").write_bytes(b"unknown baseline")
+        self.archive([("bundle/ghidraRun.bat", b"new")])
+        self.run_helper("extract", self.zip, self.dest)
+        self.assertEqual((self.dest / "ghidraRun.bat").read_bytes(), b"new")
+        recovery = self.root / "profile" / "Ghidra Launch Recovery"
+        self.assertTrue(any(path.read_bytes() == b"unknown baseline" for path in recovery.rglob("custom.txt")))
+
+    def test_added_directories_merge_without_overwriting_upstream_conflicts(self):
+        self.archive()
+        self.run_helper("extract", self.zip, self.dest)
+        (self.dest / "shared").mkdir()
+        (self.dest / "shared/custom.txt").write_bytes(b"safe addition")
+        (self.dest / "collision.txt").write_bytes(b"user case conflict")
+        (self.dest / "file-conflict").mkdir()
+        (self.dest / "file-conflict/keep.txt").write_bytes(b"user directory conflict")
+        (self.dest / "dir-conflict").write_bytes(b"user file conflict")
+        self.archive([("bundle/ghidraRun.bat", b"new"),
+                      ("bundle/shared/official.txt", b"official"),
+                      ("bundle/COLLISION.txt", b"packaged case conflict"),
+                      ("bundle/file-conflict", b"packaged file"),
+                      ("bundle/dir-conflict/official.txt", b"packaged directory")])
+        self.run_helper("extract", self.zip, self.dest)
+        self.assertEqual((self.dest / "shared/custom.txt").read_bytes(), b"safe addition")
+        self.assertEqual((self.dest / "shared/official.txt").read_bytes(), b"official")
+        self.assertEqual((self.dest / "COLLISION.txt").read_bytes(), b"packaged case conflict")
+        self.assertEqual((self.dest / "file-conflict").read_bytes(), b"packaged file")
+        self.assertEqual((self.dest / "dir-conflict/official.txt").read_bytes(), b"packaged directory")
+        recovery = self.root / "profile" / "Ghidra Launch Recovery"
+        recovered = [path.read_bytes() for path in recovery.rglob("*") if path.is_file()]
+        for content in (b"user case conflict", b"user directory conflict", b"user file conflict"):
+            self.assertIn(content, recovered)
+
+    def test_failed_recovery_preparation_leaves_original_intact(self):
+        self.archive()
+        self.run_helper("extract", self.zip, self.dest, "old")
+        (self.dest / "custom.txt").write_bytes(b"must survive")
+        before = self.marker()
+        profile = self.root / "profile"
+        profile.mkdir(exist_ok=True)
+        (profile / "Ghidra Launch Recovery").write_bytes(b"blocks recovery directory")
+        self.archive([("bundle/ghidraRun.bat", b"new")])
+        self.run_helper("extract", self.zip, self.dest, "new", code=1)
+        self.assertEqual(self.marker(), before)
+        self.assertEqual((self.dest / "ghidraRun.bat").read_bytes(), b"run")
+        self.assertEqual((self.dest / "custom.txt").read_bytes(), b"must survive")
+        self.assert_no_staging()
+
+    def test_same_source_legacy_adoption_builds_original_inventory(self):
+        self.archive()
+        self.run_helper("extract", self.zip, self.dest)
+        (self.dest / INVENTORY).unlink()
+        (self.dest / "support/x.txt").write_bytes(b"customized legacy")
+        self.run_helper("extract", self.zip, self.dest, "new")
+        self.assertTrue((self.dest / INVENTORY).is_file())
+        self.assertEqual((self.dest / "support/x.txt").read_bytes(), b"customized legacy")
+        self.assertIn(b"Retained", self.run_helper("remove", self.dest, self.zip, "new").stdout)
+
+    def test_legacy_cp437_and_utf8_looking_legacy_bytes(self):
+        for raw_name, decoded in ((b"\x82x", "éx"), (b"\xc3\xa9", "├⌐")):
+            with self.subTest(raw_name=raw_name):
+                buffer = io.BytesIO()
+                with zipfile.ZipFile(buffer, "w") as archive:
+                    archive.writestr("bundle/xx.txt", b"legacy name")
+                raw = bytearray(buffer.getvalue())
+                for signature, offset, flags in ((b"PK\x03\x04", 30, 6), (b"PK\x01\x02", 46, 8)):
+                    position = raw.index(signature)
+                    raw[position + offset:position + offset + 13] = b"bundle/" + raw_name + b".txt"
+                    struct.pack_into("<H", raw, position + flags, 0)
+                self.zip.write_bytes(raw)
+                self.run_helper("extract", self.zip, self.dest)
+                self.assertEqual((self.dest / (decoded + ".txt")).read_bytes(), b"legacy name")
+                self.run_helper("remove", self.dest, self.zip)
+
+    @unittest.skipUnless(WINDOWS, "requires Windows read-only attributes")
+    def test_readonly_clean_files_remove_and_replace(self):
+        self.archive()
+        self.run_helper("extract", self.zip, self.dest)
+        readonly = self.dest / "support/x.txt"
+        readonly.chmod(0o444)
+        self.archive([("bundle/ghidraRun.bat", b"new")])
+        self.run_helper("extract", self.zip, self.dest)
+        (self.dest / "ghidraRun.bat").chmod(0o444)
+        self.run_helper("remove", self.dest, self.zip)
+        self.assertFalse(self.dest.exists())
+
+    @unittest.skipUnless(WINDOWS, "requires Win32 file sharing")
+    def test_partial_removal_can_be_retried_with_identical_authorization(self):
+        probe = self.root / "file-share-probe"
+        probe.write_bytes(b"probe")
+        kernel, handle = self.lock(probe)
+        try:
+            if kernel.DeleteFileW(str(probe)):
+                self.skipTest("runtime does not enforce file delete sharing")
+        finally:
+            kernel.CloseHandle(handle)
+        self.archive()
+        self.run_helper("extract", self.zip, self.dest, "owner")
+        before = self.marker()
+        kernel, handle = self.lock(self.dest / "support/x.txt")
+        try:
+            self.run_helper("remove", self.dest, self.zip, "owner", code=1)
+            self.assertEqual(self.marker(), before)
+            self.assertTrue((self.dest / INVENTORY).is_file())
+        finally:
+            kernel.CloseHandle(handle)
+        self.run_helper("remove", self.dest, self.zip, "owner")
         self.assertFalse(self.dest.exists())
 
     def test_invalid_zip_or_crc_never_deletes_original(self):
@@ -305,6 +469,8 @@ class CHelperTests(unittest.TestCase):
         kernel.CreateFileW.restype = wintypes.HANDLE
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel.MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        kernel.DeleteFileW.argtypes = [wintypes.LPCWSTR]
+        kernel.DeleteFileW.restype = wintypes.BOOL
         kernel.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
         kernel.GetFileAttributesW.restype = wintypes.DWORD
         kernel.CreateSymbolicLinkW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR,
@@ -397,7 +563,8 @@ class CHelperTests(unittest.TestCase):
         self.archive([("bundle/ghidraRun.bat", b"new"),
                       ("bundle/slow.bin", b"x" * (64 * 1024 * 1024))])
         process = subprocess.Popen(self.command("extract", self.zip, self.dest),
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   env=self.environment())
         kernel = handle = None
         try:
             deadline = time.monotonic() + 30
@@ -438,7 +605,7 @@ class CHelperTests(unittest.TestCase):
         self.assertTrue(self.directory_link(child, outside))
         self.run_helper("remove", self.dest)
         self.assertEqual((outside / "keep").read_bytes(), b"untouched")
-        self.assertFalse(self.dest.exists())
+        self.assertTrue(self.dest.exists())
 
     def test_deterministic_backup_install_rollback_and_cleanup_failures(self):
         if not self.fault_exe:
@@ -449,12 +616,12 @@ class CHelperTests(unittest.TestCase):
                 self.run_helper("extract", self.zip, self.dest, "old")
                 before = self.marker()
                 self.archive([("bundle/new", b"replacement")])
-                env = os.environ.copy()
+                env = self.environment()
                 env["C_HELPER_TEST_FAILURE"] = failure
                 result = subprocess.run(
                     self.command("extract", self.zip, self.dest, "new", exe=self.fault_exe),
                     capture_output=True, timeout=90, env=env)
-                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 0 if failure == "cleanup" else 1, result.stdout + result.stderr)
                 self.assertTrue(result.stderr)
                 backups = list(self.root.glob(".old-*"))
                 if failure == "rollback":
@@ -477,12 +644,22 @@ class CHelperTests(unittest.TestCase):
                 for backup in backups:
                     shutil.rmtree(backup)
 
+    def test_deterministic_registry_and_removal_retries(self):
+        if not self.fault_exe:
+            self.skipTest("set C_HELPER_FAULT_EXE for deterministic C fault tests")
+        result = subprocess.run(
+            self.command("selftest", self.root, exe=self.fault_exe),
+            capture_output=True, timeout=90, env=self.environment(),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(b"fake file-backed registry only", result.stdout)
+
     def test_peer_helper_owner_marker_interoperability(self):
         if not self.peer_exe:
             self.skipTest("set peer helper executable for interoperability")
         def peer(*args):
             result = subprocess.run(self.command(*args, exe=self.peer_exe),
-                                    capture_output=True, timeout=90)
+                                    capture_output=True, timeout=90, env=self.environment())
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         old = "1.0.0-C-{1111}"
         new = "1.0.0-Rust-{2222}"
@@ -501,6 +678,9 @@ class CHelperTests(unittest.TestCase):
         self.assertEqual(self.marker(), (self.hash() + "\nowner=" + replacement + "\n").encode())
         peer("remove", self.dest, self.zip, new)
         self.assertEqual((self.dest / "support/x.txt").read_bytes(), b"user content")
+        self.run_helper("remove", self.dest, self.zip, replacement)
+        self.assertTrue(self.dest.exists())
+        (self.dest / "support/x.txt").write_bytes(b"first")
         self.run_helper("remove", self.dest, self.zip, replacement)
         self.assertFalse(self.dest.exists())
 

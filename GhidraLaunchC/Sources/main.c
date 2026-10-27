@@ -202,7 +202,7 @@ static BOOL RunLaunchSupport(
 
 // Start Ghidra the way ghidraRun.bat and support\launch.bat do, without cmd.exe.
 // Returns FALSE when that is not possible so the caller can fall back to ghidraRun.bat.
-static BOOL LaunchNative(const WCHAR* const wDirectory, const WCHAR* const wArguments, DWORD* const pdwExitCode) {
+static BOOL LaunchNative(const WCHAR* const wDirectory, const WCHAR* const wArguments, DWORD* const pdwExitCode, BOOL* const pbJdkError) {
   static WCHAR wPath[PATH_SIZE];
   static WCHAR wJava[PATH_SIZE];
   static WCHAR wJavaw[PATH_SIZE];
@@ -218,6 +218,7 @@ static BOOL LaunchNative(const WCHAR* const wDirectory, const WCHAR* const wArgu
   WCHAR* wEquals;
   DWORD dwLength;
 
+  *pbJdkError = FALSE;
   // launch.bat rejects '!' in the path and a trailing backslash would escape the quotes below
   const size_t length = wcslen(wDirectory);
   if (length == 0 || wDirectory[length - 1] == L'\\' || wcschr(wDirectory, L'!') != NULL) {
@@ -232,26 +233,23 @@ static BOOL LaunchNative(const WCHAR* const wDirectory, const WCHAR* const wArgu
   }
 
   if (!FindJava(wDirectory, wJava, _countof(wJava))) {
+    *pbJdkError = TRUE;
     return FALSE;
   }
 
-  // LaunchSupport picks and remembers a supported JDK; ask the user when none is known yet
+  // Interactive LaunchSupport requires a console; report selection failure instead.
   wJavaHome[0] = L'\0';
-  for (int attempt = 0; attempt < 2 && wJavaHome[0] == L'\0'; ++attempt) {
-    if (attempt == 1 && !RunLaunchSupport(wJava, wDirectory, L"-jdk_home -ask", NULL, 0)) {
-      return FALSE;
-    }
-    if (RunLaunchSupport(wJava, wDirectory, L"-jdk_home -save", wOutput, _countof(wOutput))) {
-      wCursor = wOutput;
-      while ((wLine = NextLine(&wCursor)) != NULL) {
-        if (wcscpy_s(wJavaHome, _countof(wJavaHome), wLine) != 0) {
-          return FALSE;
-        }
+  if (RunLaunchSupport(wJava, wDirectory, L"-jdk_home -save", wOutput, _countof(wOutput))) {
+    wCursor = wOutput;
+    while ((wLine = NextLine(&wCursor)) != NULL) {
+      if (wcscpy_s(wJavaHome, _countof(wJavaHome), wLine) != 0) {
+        return FALSE;
       }
     }
   }
   if (wJavaHome[0] == L'\0' || swprintf_s(wJava, _countof(wJava), L"%ls\\bin\\java.exe", wJavaHome) < 0 || !IsFile(wJava) ||
       swprintf_s(wJavaw, _countof(wJavaw), L"%ls\\bin\\javaw.exe", wJavaHome) < 0 || !IsFile(wJavaw)) {
+    *pbJdkError = TRUE;
     return FALSE;
   }
 
@@ -345,12 +343,12 @@ int APIENTRY wWinMain(
   static WCHAR wGhidraDirectory[PATH_SIZE];
   static WCHAR wApplicationName[PATH_SIZE];
   static WCHAR wCommandLine[PATH_SIZE];
-  static WCHAR wEscapedPath[PATH_SIZE];
   STARTUPINFOW lpStartupInfo;
   PROCESS_INFORMATION lpProcessInfo;
   WCHAR* wSeparator;
   DWORD dwLength;
   DWORD dwExitCode = EXIT_FAILURE;
+  BOOL bJdkError = FALSE;
 
   UNREFERENCED_PARAMETER(hInstance);
   UNREFERENCED_PARAMETER(hPrevInstance);
@@ -381,11 +379,15 @@ int APIENTRY wWinMain(
   }
 
   // start Ghidra directly; fall back to ghidraRun.bat when that is not possible
-  if (LaunchNative(wDirectory, lpCmdLine, &dwExitCode)) {
+  if (LaunchNative(wDirectory, lpCmdLine, &dwExitCode, &bJdkError)) {
     if (dwExitCode != EXIT_SUCCESS) {
       ShowError(L"Ghidra exited with code", dwExitCode);
     }
     return (int)dwExitCode;
+  }
+  if (bJdkError) {
+    ShowError(L"No supported JDK could be selected. Set JAVA_HOME to a supported 64-bit JDK and restart Ghidra Launch. For manual selection, run ghidraRun.bat from a command prompt. Error", ERROR_NOT_FOUND);
+    return EXIT_FAILURE;
   }
 
   // the fallback needs ghidraRun.bat
@@ -413,34 +415,13 @@ int APIENTRY wWinMain(
     return EXIT_FAILURE;
   }
 
-  // cmd.exe cannot use a UNC working directory; insert its percent signs after cmd's percent-expansion pass
-  if (wcsncmp(wDirectory, L"\\\\", 2) == 0 && wcschr(wDirectory, L'%') != NULL) {
-    WCHAR* wOut = wEscapedPath;
-    for (const WCHAR* wIn = wCommandLine; *wIn != L'\0'; ++wIn) {
-      const WCHAR* wReplacement = *wIn == L'%' ? L"!GL_P!" :
-                                  *wIn == L'!' ? L"!GL_B!" :
-                                  *wIn == L'^' ? L"!GL_C!" : NULL;
-      const size_t length = wReplacement == NULL ? 1 : wcslen(wReplacement);
-      if ((size_t)(wOut - wEscapedPath) + length >= _countof(wEscapedPath)) {
-        ShowError(L"Unable to prepare the command line, error", ERROR_FILENAME_EXCED_RANGE);
-        return EXIT_FAILURE;
-      }
-      wmemcpy(wOut, wReplacement == NULL ? wIn : wReplacement, length);
-      wOut += length;
-    }
-    *wOut = L'\0';
-    if (!SetEnvironmentVariableW(L"GL_P", L"%") ||
-        !SetEnvironmentVariableW(L"GL_B", L"!") ||
-        !SetEnvironmentVariableW(L"GL_C", L"^")) {
-      ShowError(L"Unable to prepare the command line, error", GetLastError());
-      return EXIT_FAILURE;
-    }
-    dwLength = swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /v:on /c \"\"%ls\"\"", wApplicationName, wEscapedPath);
-  } else if (wcsncmp(wDirectory, L"\\\\", 2) == 0) {
-    dwLength = swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c \"\"%ls\\%ls\"\"", wApplicationName, wDirectory, BATCH_FILE);
-  } else {
-    dwLength = swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /c .\\%ls", wApplicationName, BATCH_FILE);
+  // Insert paths and arguments after cmd's percent expansion and metacharacter parsing.
+  if (!SetEnvironmentVariableW(L"GL_BATCH", wcsncmp(wDirectory, L"\\\\", 2) == 0 ? wCommandLine : L".\\ghidraRun.bat") ||
+      !SetEnvironmentVariableW(L"GL_ARGS", lpCmdLine)) {
+    ShowError(L"Unable to prepare the command line, error", GetLastError());
+    return EXIT_FAILURE;
   }
+  dwLength = swprintf_s(wCommandLine, _countof(wCommandLine), L"\"%ls\" /d /v:on /s /c \"\"!GL_BATCH!\" !GL_ARGS!\"", wApplicationName);
   if (dwLength == (DWORD)-1) {
     ShowError(L"Unable to prepare the command line, error", ERROR_FILENAME_EXCED_RANGE);
     return EXIT_FAILURE;

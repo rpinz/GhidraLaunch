@@ -25,7 +25,7 @@ function Assert-DisplayNames($baFolder, $expected, $scope) {
 function Assert-BundleCondition($manifest, $scope) {
     $conditions = @($manifest.DocumentElement.SelectNodes('./*[local-name() = "Condition"]'))
     if ($conditions.Count -ne 1 -or
-        $conditions[0].InnerText -ne 'VersionNT >= v6.3 AND VersionNT64 >= v6.3') {
+        $conditions[0].InnerText -ne 'VersionNT >= v10.0 AND VersionNT64 >= v10.0 AND WindowsBuildNumber >= 17763') {
         throw "$scope has an invalid or escaped minimum-Windows condition"
     }
 }

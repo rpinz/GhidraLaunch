@@ -1,7 +1,9 @@
 # GhidraLaunch
 
-Windows x64 launchers for `ghidraRun.bat`, with matched C and Rust distributions
+Windows 10 version 1809 or newer / Windows 11 x64 launchers for `ghidraRun.bat`, with matched C and Rust distributions
 built using WiX v5.
+
+The selected Ghidra and Temurin releases may impose newer platform requirements.
 
 ## Install and launch
 
@@ -56,16 +58,32 @@ steps as `ghidraRun.bat` and `support\launch.bat`: they run Ghidra's
 `LaunchSupport` to choose a supported JDK and read `launch.properties` (JVM
 arguments and environment variables), honour `GHIDRA_MAXMEM`,
 `GHIDRA_GUI_MAXMEM`, `GHIDRA_JAVA_OPTIONS`, `GHIDRA_GUI_JAVA_OPTIONS` and
-`JAVA_HOME`, forward command-line arguments, and start `javaw.exe` with no
+`JAVA_HOME`, forward command-line arguments (including through batch fallback), and start `javaw.exe` with no
 console window. Java is found on `PATH`, then `JAVA_HOME`. If the folder is not
 a packaged Ghidra (for example a source checkout), Java cannot be started
 this way, or the path contains `!`, the launcher falls back to running
 `ghidraRun.bat`.
 
-**Uninstalling** removes the extracted Ghidra folder along with the
-launchers, including any extensions, scripts, or other files you placed
-inside it — back up anything you want to keep from that folder first. Ghidra
-project files stored elsewhere in your profile are not affected.
+If a packaged Ghidra cannot select a supported JDK, the launcher reports an
+actionable error rather than running an invisible interactive prompt. Set
+`JAVA_HOME` to a supported 64-bit JDK and restart the launcher, or run
+`ghidraRun.bat` from a command prompt to use Ghidra's manual JDK selection.
+
+**Upgrading** carries forward added files that do not conflict with the new
+upstream tree. Edited upstream files and conflicting additions are preserved
+under `%LOCALAPPDATA%\Ghidra Launch Recovery`; the newly installed tree uses the
+new upstream versions. If an older installation cannot be classified safely,
+its complete previous tree is retained there instead. Recovery copies are not
+automatically deleted. Carried-forward extensions may still need updating for
+compatibility with the new Ghidra release.
+
+**Uninstalling** removes a clean, unchanged Ghidra tree. If files were added,
+edited, or deleted, or its inventory cannot be verified, the entire Ghidra
+folder is retained and its path is reported. The launcher, shortcuts and active
+installation registration are still removed. These preservation rules also
+apply to standalone helper commands. Reinstalling into a retained tree uses the
+same preservation policy. Ghidra project files elsewhere in your profile are
+not affected.
 
 ## WinGet
 
@@ -86,7 +104,10 @@ automated; the hash is taken from the final (post-signing) bundles.
 ## Build
 
 Use Visual Studio 2022 with the Desktop development with C++ workload, the
-Windows SDK, and Rust's `x86_64-pc-windows-msvc` target. Open
+Windows SDK, and Rust's `x86_64-pc-windows-msvc` target. The shared
+`rust-toolchain.toml` pins Rust 1.99.1 with rustfmt and Clippy; restore it with
+`rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy`.
+Open
 `GhidraLaunch.sln` and build the x64 Debug or Release configuration. The Rust
 project uses `cargo build --locked`; commit `GhidraLaunchRS/Cargo.lock` when
 updating dependencies. Visual Studio Rebuild cleans and rebuilds the Rust
@@ -157,7 +178,7 @@ Java stage performs its own fresh detection/install.
 ### Native helper contract
 
 Both helpers accept case-insensitive commands and return 0 for success (including
-a logged source/ownership-mismatch removal skip), 1 for an operation failure,
+logged retention, source/ownership-mismatch skips, or postcommit cleanup warnings), 1 for an operation failure,
 and 2 for invalid usage:
 
 ```text
@@ -166,14 +187,22 @@ remove <destDir> [zipPath] [owner]
 ```
 
 Extraction strips a single top-level directory, stages beside the destination,
-and records the ZIP's SHA-256 in `.ghidralaunch-source.sha256`. An unchanged ZIP
-preserves existing contents. Failed extraction must leave the previous tree
-intact. Unsafe Windows archive paths and links are rejected.
+and records the ZIP's SHA-256 in `.ghidralaunch-source.sha256`. Both helpers
+share a versioned `.ghidralaunch-inventory` of upstream file hashes and
+directories; it distinguishes customizations without treating existing user
+edits as the new baseline. An unchanged ZIP preserves existing contents.
+Failed precommit extraction or ownership recording restores the previous tree;
+a postcommit cleanup failure reports the remaining backup without reverting
+the consistently owned new installation. That cleanup-only warning returns
+success so Burn does not roll back an already committed launcher installation.
+Unsafe Windows archive paths and
+links are rejected. Both helpers decode UTF-8-flagged and legacy CP437 ZIP names.
 
 Standalone extraction uses the legacy plain-hash marker. Setup supplies an
 owner token (its unique Burn provider key), recorded as a second
-`owner=...` line. Adopting an unchanged ZIP updates ownership without extracting
-again. Owner-aware removal requires matching ownership and source hash; calls
+`owner=...` line. Adopting an unchanged ZIP updates ownership without replacing
+existing contents; legacy installations without an inventory first derive one
+from the validated source archive. Owner-aware removal requires matching ownership and source hash; calls
 without an owner skip owned trees. The older managed helper also skips these
 extended markers, preventing an outgoing legacy bundle from removing the
 incoming installation. Native helpers accept each other's markers and legacy
@@ -185,7 +214,8 @@ Setup detects ownership through `HKCU\Software\rpinz\Ghidra Launch`'s
 changes - Burn skips an already installed launcher MSI when a republished
 bundle ships the identical package - so an owner-aware helper call maintains
 that value alongside the marker: it records the owner after extraction or
-adoption, and retracts it when a matching owner removes the tree. The record
+adoption, and retracts it when a matching owner removes or intentionally retains
+the tree during uninstall. The record
 describes `%LOCALAPPDATA%\Ghidra Launch\Ghidra`, so helper runs against any
 other destination leave it untouched.
 
@@ -311,4 +341,6 @@ After generating SBOMs, the workflow keyless-signs and verifies the six
 published files, uploads them and their six verification bundles to a draft, checks
 downloaded assets byte-for-byte, and only then publishes the release. A failed
 run may leave a draft for manual inspection; re-running against an existing
-release fails rather than overwriting its assets.
+release fails rather than overwriting its assets. Publication also verifies that
+the release tag still resolves to the exact commit built, including annotated
+tags, before creating the draft and before making it public.

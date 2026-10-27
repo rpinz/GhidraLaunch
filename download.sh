@@ -50,10 +50,10 @@ download() {
 # XML-escape a value for use inside a WiX preprocessor <?define ?> string
 xml_escape() {
   local value="$1"
-  value="${value//&/&amp;}"
-  value="${value//</&lt;}"
-  value="${value//>/&gt;}"
-  value="${value//\"/&quot;}"
+  value="${value//&/\&amp;}"
+  value="${value//</\&lt;}"
+  value="${value//>/\&gt;}"
+  value="${value//\"/\&quot;}"
   printf '%s' "${value}"
 }
 
@@ -110,7 +110,7 @@ if [[ "${ghidra_downloaded}" -eq 1 ]]; then
     echo "Ghidra Java requirement not found in release archive"
     status=1
   else
-    java_version="$(unzip -p Ghidra.zip "${application_properties}" | awk -F= '$1 == "application.java.min" && !found { gsub(/[[:space:]]/, "", $2); print $2; found=1 }')" || java_version=""
+    java_version="$(unzip -p Ghidra.zip "${application_properties}" | awk '/^application[.]java[.]min=/ && !found { sub(/^[^=]*=/, ""); gsub(/[[:space:]]/, ""); print; found=1 }')" || java_version=""
     if [[ ! "${java_version}" =~ ^[0-9]+$ ]]; then
       echo "Ghidra Java requirement is missing or invalid"
       status=1

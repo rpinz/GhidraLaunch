@@ -92,8 +92,53 @@ class RustHelperBuildCommandTests(unittest.TestCase):
                 makefile = (project.parent / "Makefile").read_text()
                 self.assertIn(copy, makefile)
                 rebuild = group.find(f"{namespace}NMakeReBuildCommandLine").text
-                remove = f"if exist {output_dir}\\{executable} (del /q {output_dir}\\{executable}) &&"
+                remove = f"(if exist {output_dir}\\{executable} (del /q {output_dir}\\{executable})) &&"
                 self.assertIn(remove, rebuild)
+
+    @unittest.skipUnless(WINDOWS, "requires cmd.exe")
+    def test_rebuild_executes_with_absent_outputs_and_propagates_failures(self):
+        project = Path(__file__).resolve().parents[1] / "GhidraLaunchGhidraHelperRS/GhidraLaunchGhidraHelperRS.vcxproj"
+        namespace = "{http://schemas.microsoft.com/developer/msbuild/2003}"
+        root = ET.parse(project).getroot()
+        for configuration in ("Debug", "Release"):
+            group = next(
+                element for element in root.findall(f"{namespace}PropertyGroup")
+                if element.get("Condition") == f"'$(Configuration)|$(Platform)'=='{configuration}|x64'"
+                and element.find(f"{namespace}NMakeReBuildCommandLine") is not None
+            )
+            command = group.find(f"{namespace}NMakeReBuildCommandLine").text
+            command = command.replace("cargo clean", "call cargo.cmd clean").replace("cargo build", "call cargo.cmd build")
+            for existing, failure in ((False, ""), (True, ""), (False, "clean"), (False, "build"), (False, "copy")):
+                with self.subTest(configuration=configuration, existing=existing, failure=failure), tempfile.TemporaryDirectory() as directory:
+                    work = Path(directory)
+                    name = "GhidraLaunchGhidraHelperRS.exe"
+                    source = work / "target" / configuration.lower() / name
+                    source.parent.mkdir(parents=True)
+                    if failure != "copy":
+                        source.write_bytes(b"rebuilt")
+                    destination = work / "bin" / configuration / name
+                    if existing:
+                        destination.parent.mkdir(parents=True)
+                        destination.write_bytes(b"old")
+                    (work / "cargo.cmd").write_text(
+                        '@echo off\n'
+                        'echo %*>>calls.txt\n'
+                        'if "%1"=="%FAIL_STEP%" exit /b 9\n'
+                        'exit /b 0\n'
+                    )
+                    invocation = command.replace("call cargo.cmd", f'call "{work / "cargo.cmd"}"')
+                    result = subprocess.run(
+                        f'cmd /d /s /c "{invocation}"', cwd=work,
+                        env={**os.environ, "FAIL_STEP": failure},
+                        capture_output=True, timeout=30,
+                    )
+                    if failure:
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertFalse(destination.exists())
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(destination.read_bytes(), b"rebuilt")
+                        self.assertEqual(len((work / "calls.txt").read_text().splitlines()), 2)
 
 
 if EXE and ARTIFACTS:
@@ -107,6 +152,10 @@ if EXE and ARTIFACTS:
         peer_exe = PEER_EXE
         artifacts = ARTIFACTS
         wine = WINE
+
+        @unittest.skip("C-specific rename lock; Rust exercises install/restore faults in its unit suite")
+        def test_failed_install_rename_rolls_original_back(self):
+            pass
 
 
 def windows_path(value):
@@ -133,7 +182,8 @@ class RustHelperTests(unittest.TestCase):
         return [WINE, windows_path(exe), *[convert(arg) for arg in args]]
 
     def run_helper(self, *args, code=0, exe=None):
-        result = subprocess.run(self.command(*args, exe=exe), capture_output=True, timeout=90)
+        result = subprocess.run(self.command(*args, exe=exe), capture_output=True, timeout=90,
+                                env={**os.environ, "LOCALAPPDATA": str(self.root / "profile")})
         self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         if code:
             self.assertTrue(result.stderr, "failure must have stderr diagnostics")
@@ -193,6 +243,9 @@ class RustHelperTests(unittest.TestCase):
         self.assertTrue(self.dest.exists())
         self.run_helper("remove", self.dest, "", "{00000000-0000-0000-0000-000000000000}")
         self.assertTrue(self.dest.exists())
+        self.run_helper("remove", self.dest, "", provider_key)
+        self.assertTrue(self.dest.exists())
+        (self.dest / "support" / "\xe9.txt").write_bytes(b"payload")
         self.run_helper("remove", self.dest, "", provider_key)
         self.assertFalse(self.dest.exists())
 
