@@ -5,7 +5,6 @@
 <?define BundleName = "Ghidra Launch" ?>
 <?define BundleManufacturer = "rpinz" ?>
 <?define BundleCopyright = "The Unlicense" ?>
-<?define BundleCondition = "VersionNT >= v6.3 AND VersionNT64 >= v6.3" ?>
 <?define LicenseUrl = "https://unlicense.org/" ?>
 <?define AboutUrl = "https://github.com/rpinz/GhidraLaunch" ?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
@@ -18,7 +17,7 @@
           Copyright="$(var.BundleCopyright)"
           IconSourceFile="..\Resources\Ghidra.ico"
           UpgradeCode="{933B00E3-642F-4745-946E-15FC9F064B43}"
-          Condition="$(var.BundleCondition)">
+          Condition="VersionNT >= v6.3 AND VersionNT64 >= v6.3">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication Theme="hyperlinkSidebarLicense"
           LicenseUrl="$(var.LicenseUrl)" LogoFile="..\Resources\Logo.png"
@@ -51,7 +50,7 @@
           IconSourceFile="..\Resources\Ghidra.ico"
           SplashScreenSourceFile="..\Resources\Splash.bmp"
           UpgradeCode="{DFE05126-B29E-4298-A06B-63F833BC0BF8}"
-          Condition="$(var.BundleCondition)">
+          Condition="VersionNT >= v6.3 AND VersionNT64 >= v6.3">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication
           Theme="hyperlinkSidebarLicense" LicenseUrl="$(var.LicenseUrl)"
@@ -86,7 +85,7 @@
   <Bundle Name="$(var.BundleName)" Manufacturer="$(var.BundleManufacturer)" Version="$(var.ReleaseVersion)"
           Copyright="$(var.BundleCopyright)" DisableModify="yes" DisableRemove="yes"
           UpgradeCode="{9325B8EC-A307-482D-9072-A5C9EE1D172A}"
-          Condition="$(var.BundleCondition)">
+          Condition="VersionNT >= v6.3 AND VersionNT64 >= v6.3">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense"
           LicenseUrl="$(var.LicenseUrl)" SuppressRepair="yes" />
