@@ -27,7 +27,7 @@ typedef struct {
 } PathEntry;
 
 typedef struct {
-    PathEntry *items;
+    _Field_size_part_(capacity, count) PathEntry *items;
     size_t count, capacity;
 } Paths;
 
@@ -144,11 +144,11 @@ static wchar_t *full_path(const wchar_t *path)
     result = allocate((n + 7) * sizeof(wchar_t));
     if (result) {
         if (!wcsncmp(plain, L"\\\\", 2)) {
-            wcscpy(result, L"\\\\?\\UNC\\");
-            wcscpy(result + 8, plain + 2);
+            wcscpy_s(result, n + 7, L"\\\\?\\UNC\\");
+            wcscpy_s(result + 8, n - 1, plain + 2);
         } else {
-            wcscpy(result, L"\\\\?\\");
-            wcscpy(result + 4, plain);
+            wcscpy_s(result, n + 7, L"\\\\?\\");
+            wcscpy_s(result + 4, n + 3, plain);
         }
         n = wcslen(result);
         while (n > root_length(result) && result[n - 1] == L'\\')
@@ -300,7 +300,9 @@ static BOOL random_name(wchar_t name[50], const wchar_t *prefix)
     NTSTATUS status = BCryptGenRandom(NULL, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
     if (status < 0)
         return problem(L"CNG random generation failed", prefix);
-    wcscpy(name, prefix);
+    if (n + 33 > 50)
+        return problem(L"Random name prefix is too long", prefix);
+    wcscpy_s(name, 50, prefix);
     for (i = 0; i < sizeof(random); ++i) {
         name[n + 2 * i] = L"0123456789abcdef"[random[i] >> 4];
         name[n + 2 * i + 1] = L"0123456789abcdef"[random[i] & 15];
@@ -332,7 +334,8 @@ static wchar_t *new_directory(const wchar_t *parent, const wchar_t *prefix)
     return NULL;
 }
 
-static HANDLE open_input(const wchar_t *path)
+/* never NULL: failures return INVALID_HANDLE_VALUE */
+_Ret_notnull_ static HANDLE open_input(const wchar_t *path)
 {
     BY_HANDLE_FILE_INFORMATION info;
     HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
@@ -989,10 +992,13 @@ static wchar_t *source_root(const wchar_t *stage)
     return copy_n(stage, wcslen(stage));
 }
 
-static void free_paths(Paths *paths)
+static void free_paths(_Inout_ Paths *paths)
 {
     size_t i;
     for (i = 0; i < paths->count; ++i)
+        /* every entry below count was initialized by add_path; PREfast assumes free()
+           may invalidate the items array itself (C6001 false positive) */
+#pragma warning(suppress : 6001)
         free(paths->items[i].name);
     free(paths->items);
     memset(paths, 0, sizeof(*paths));
@@ -1107,10 +1113,11 @@ static BOOL scan_tree(const wchar_t *root, const wchar_t *relative, Paths *paths
             ok = scan_tree(root, name, paths, reject_metadata);
         } else {
             HANDLE file = open_input(path);
-            ok = file != INVALID_HANDLE_VALUE &&
-                 sha256(file, paths->items[paths->count - 1].hash);
-            if (file != INVALID_HANDLE_VALUE)
+            ok = FALSE;
+            if (file != INVALID_HANDLE_VALUE) {
+                ok = sha256(file, paths->items[paths->count - 1].hash);
                 CloseHandle(file);
+            }
         }
         free(name);
         free(path);
@@ -2260,7 +2267,7 @@ typedef struct {
 } LegacyBundle;
 
 typedef struct {
-    LegacyBundle *items;
+    _Field_size_(count) LegacyBundle *items;
     size_t count;
 } LegacyBundles;
 
@@ -2356,14 +2363,19 @@ done:
     return matches;
 }
 
-static void legacy_free(LegacyBundles *bundles)
+static void legacy_free(_Inout_ LegacyBundles *bundles)
 {
     size_t i;
+    /* every entry below count was initialized by legacy_select; PREfast assumes
+       free()/CloseHandle() may invalidate the items array itself (C6001 false positive) */
+#pragma warning(push)
+#pragma warning(disable : 6001)
     for (i = 0; i < bundles->count; ++i) {
         free(bundles->items[i].cache);
         if (bundles->items[i].pin != INVALID_HANDLE_VALUE)
             CloseHandle(bundles->items[i].pin);
     }
+#pragma warning(pop)
     free(bundles->items);
     memset(bundles, 0, sizeof(*bundles));
 }
@@ -2426,8 +2438,10 @@ static BOOL legacy_select(HKEY key, const wchar_t *registration,
             ok = TRUE;
             goto done;
         }
-    if (bundles->count == SIZE_MAX / sizeof(*grown))
+    if (bundles->count >= SIZE_MAX / sizeof(*grown)) {
+        problem(L"Too many legacy Ghidra Launch registrations", registration);
         goto done;
+    }
     grown = realloc(bundles->items, (bundles->count + 1) * sizeof(*grown));
     if (!grown) {
         problem(L"Out of memory enumerating legacy Ghidra Launch", registration);
@@ -2479,8 +2493,12 @@ static BOOL legacy_enumerate(const LegacyVersion *incoming, LegacyBundles *bundl
                     SetLastError((DWORD)status);
                     return win_error(L"Enumerating legacy bundle registrations", scopes[hive]);
                 }
-                swprintf(label, sizeof(label) / sizeof(label[0]), L"%ls (%u-bit)\\%ls\\%ls",
-                         scopes[hive], view ? 64 : 32, LEGACY_UNINSTALL_KEY, name);
+                if (swprintf(label, sizeof(label) / sizeof(label[0]), L"%ls (%u-bit)\\%ls\\%ls",
+                             scopes[hive], view ? 64u : 32u, LEGACY_UNINSTALL_KEY, name) < 0) {
+                    RegCloseKey(root);
+                    SetLastError(ERROR_INSUFFICIENT_BUFFER);
+                    return win_error(L"Formatting legacy bundle registration", name);
+                }
                 status = RegOpenKeyExW(root, name, 0, KEY_QUERY_VALUE | views[view], &key);
                 if (status == ERROR_FILE_NOT_FOUND)
                     continue;
@@ -2534,7 +2552,7 @@ static wchar_t *legacy_quote(const wchar_t *argument)
 
 static wchar_t *legacy_log(void)
 {
-    wchar_t temp[32768], name[50], *root = NULL, *path = NULL;
+    wchar_t name[50], *root = NULL, *path = NULL;
     HANDLE file;
     unsigned attempt;
 #ifdef HELPER_TEST_LEGACY_LOG_ROOT
@@ -2543,6 +2561,8 @@ static wchar_t *legacy_log(void)
         return NULL;
     root = copy_n(test_root, wcslen(test_root));
 #else
+    /* GetTempPathW never returns more than MAX_PATH + 1 characters */
+    wchar_t temp[MAX_PATH + 2];
     DWORD length = GetTempPathW(sizeof(temp) / sizeof(temp[0]), temp);
     if (!length || length >= sizeof(temp) / sizeof(temp[0])) {
         win_error(L"Finding legacy uninstaller log directory", L"");
@@ -2550,13 +2570,12 @@ static wchar_t *legacy_log(void)
     }
     root = full_path(temp);
 #endif
-    (void)temp;
     if (!root || !directories(root, FALSE))
         goto done;
     for (attempt = 0; attempt < 32; ++attempt) {
         if (!random_name(name, L".legacy-log-"))
             break;
-        wcscat(name, L".log");
+        wcscat_s(name, 50, L".log");
         path = join(root, name);
         if (!path)
             break;

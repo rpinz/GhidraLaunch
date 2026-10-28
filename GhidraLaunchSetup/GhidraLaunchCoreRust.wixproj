@@ -1,4 +1,4 @@
-<Project Sdk="WixToolset.Sdk/5.0.2">
+<Project Sdk="WixToolset.Sdk">
   <PropertyGroup><Variant>Rust</Variant><Stage>Core</Stage></PropertyGroup>
   <Import Project="Setup.props" />
 </Project>

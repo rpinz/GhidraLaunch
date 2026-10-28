@@ -39,17 +39,17 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <NMakeBuildCommandLine>cargo build --locked &amp;&amp; copy target\debug\ghidra_launch.exe GhidraLaunchRS.exe</NMakeBuildCommandLine>
-    <NMakeOutput>GhidraLaunchRS.exe</NMakeOutput>
-    <NMakeCleanCommandLine>cargo clean &amp;&amp; del GhidraLaunchRS.exe  || exit 0</NMakeCleanCommandLine>
-    <NMakeReBuildCommandLine>cargo clean &amp;&amp; cargo build --locked &amp;&amp; copy target\debug\ghidra_launch.exe GhidraLaunchRS.exe</NMakeReBuildCommandLine>
+    <NMakeBuildCommandLine>cargo build --locked --manifest-path &quot;$(MSBuildThisFileDirectory)Cargo.toml&quot; &amp;&amp; (if exist bin\Debug (ver &gt;nul) else (mkdir bin\Debug)) &amp;&amp; copy /y ..\target\debug\GhidraLaunchRS.exe bin\Debug\GhidraLaunchRS.exe &amp;&amp; copy /y ..\target\debug\GhidraLaunchRS.pdb bin\Debug\GhidraLaunchRS.pdb</NMakeBuildCommandLine>
+    <NMakeOutput>bin\Debug\GhidraLaunchRS.exe</NMakeOutput>
+    <NMakeCleanCommandLine>cargo clean --profile dev -p ghidra_launch --manifest-path &quot;$(MSBuildThisFileDirectory)Cargo.toml&quot; &amp;&amp; (if exist bin\Debug\GhidraLaunchRS.exe (del /q bin\Debug\GhidraLaunchRS.exe)) &amp;&amp; (if exist bin\Debug\GhidraLaunchRS.pdb (del /q bin\Debug\GhidraLaunchRS.pdb))</NMakeCleanCommandLine>
+    <NMakeReBuildCommandLine>cargo clean --profile dev -p ghidra_launch --manifest-path &quot;$(MSBuildThisFileDirectory)Cargo.toml&quot; &amp;&amp; (if exist bin\Debug\GhidraLaunchRS.exe (del /q bin\Debug\GhidraLaunchRS.exe)) &amp;&amp; (if exist bin\Debug\GhidraLaunchRS.pdb (del /q bin\Debug\GhidraLaunchRS.pdb)) &amp;&amp; cargo build --locked --manifest-path &quot;$(MSBuildThisFileDirectory)Cargo.toml&quot; &amp;&amp; (if exist bin\Debug (ver &gt;nul) else (mkdir bin\Debug)) &amp;&amp; copy /y ..\target\debug\GhidraLaunchRS.exe bin\Debug\GhidraLaunchRS.exe &amp;&amp; copy /y ..\target\debug\GhidraLaunchRS.pdb bin\Debug\GhidraLaunchRS.pdb</NMakeReBuildCommandLine>
     <NMakePreprocessorDefinitions>_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <NMakeBuildCommandLine>cargo build --release --locked &amp;&amp; copy target\release\ghidra_launch.exe GhidraLaunchRS.exe</NMakeBuildCommandLine>
-    <NMakeOutput>GhidraLaunchRS.exe</NMakeOutput>
-    <NMakeCleanCommandLine>cargo clean --release &amp;&amp; del GhidraLaunchRS.exe || exit 0</NMakeCleanCommandLine>
-    <NMakeReBuildCommandLine>cargo clean --release &amp;&amp; cargo build --release --locked &amp;&amp; copy target\release\ghidra_launch.exe GhidraLaunchRS.exe</NMakeReBuildCommandLine>
+    <NMakeBuildCommandLine>cargo build --release --locked --manifest-path &quot;$(MSBuildThisFileDirectory)Cargo.toml&quot; &amp;&amp; (if exist bin\Release (ver &gt;nul) else (mkdir bin\Release)) &amp;&amp; copy /y ..\target\release\GhidraLaunchRS.exe bin\Release\GhidraLaunchRS.exe &amp;&amp; copy /y ..\target\release\GhidraLaunchRS.pdb bin\Release\GhidraLaunchRS.pdb</NMakeBuildCommandLine>
+    <NMakeOutput>bin\Release\GhidraLaunchRS.exe</NMakeOutput>
+    <NMakeCleanCommandLine>cargo clean --release -p ghidra_launch --manifest-path &quot;$(MSBuildThisFileDirectory)Cargo.toml&quot; &amp;&amp; (if exist bin\Release\GhidraLaunchRS.exe (del /q bin\Release\GhidraLaunchRS.exe)) &amp;&amp; (if exist bin\Release\GhidraLaunchRS.pdb (del /q bin\Release\GhidraLaunchRS.pdb))</NMakeCleanCommandLine>
+    <NMakeReBuildCommandLine>cargo clean --release -p ghidra_launch --manifest-path &quot;$(MSBuildThisFileDirectory)Cargo.toml&quot; &amp;&amp; (if exist bin\Release\GhidraLaunchRS.exe (del /q bin\Release\GhidraLaunchRS.exe)) &amp;&amp; (if exist bin\Release\GhidraLaunchRS.pdb (del /q bin\Release\GhidraLaunchRS.pdb)) &amp;&amp; cargo build --release --locked --manifest-path &quot;$(MSBuildThisFileDirectory)Cargo.toml&quot; &amp;&amp; (if exist bin\Release (ver &gt;nul) else (mkdir bin\Release)) &amp;&amp; copy /y ..\target\release\GhidraLaunchRS.exe bin\Release\GhidraLaunchRS.exe &amp;&amp; copy /y ..\target\release\GhidraLaunchRS.pdb bin\Release\GhidraLaunchRS.pdb</NMakeReBuildCommandLine>
     <NMakePreprocessorDefinitions>NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
   </PropertyGroup>
   <ItemDefinitionGroup>
@@ -59,6 +59,11 @@
     <None Include="build.rs" />
     <None Include="Cargo.toml" />
     <None Include="src\main.rs" />
+    <None Include="..\.cargo\config.toml" />
+    <None Include="..\Cargo.toml" />
+    <None Include="..\Cargo.lock" />
+    <None Include="..\deny.toml" />
+    <None Include="..\Resources\application.manifest" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -20,7 +20,7 @@
             <RegistryValue Name="GhidraLaunchC.exe" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
           </Component>
           <Component Id="RSLauncherComponent" Guid="{82BBD580-462D-47C4-AAB1-0C0E0DECB45B}">
-            <File Id="RSLauncherComponent" Source="$(var.Root)\GhidraLaunchRS\GhidraLaunchRS.exe" Checksum="yes" />
+            <File Id="RSLauncherComponent" Source="$(var.Root)\GhidraLaunchRS\bin\Release\GhidraLaunchRS.exe" Checksum="yes" />
             <RemoveFile Id="RemoveRustLauncher" Name="GhidraLaunchRS.exe" On="both" />
             <RegistryValue Name="GhidraLaunchRS.exe" Root="HKCU" Key="Software\rpinz\Ghidra Launch" Type="integer" Value="1" KeyPath="yes" />
           </Component>

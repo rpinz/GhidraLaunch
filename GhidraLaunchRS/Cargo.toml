@@ -1,14 +1,20 @@
 [package]
 name = "ghidra_launch"
 version = "0.0.1"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
 build = "build.rs"
 
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
+# Named like the packaged executable so the PDB (GhidraLaunchRS.pdb) matches the name
+# recorded in the executable's debug directory after it is copied to bin\<Configuration>.
+[[bin]]
+name = "GhidraLaunchRS"
+path = "src/main.rs"
+
+[lints]
+workspace = true
 
 [dependencies]
 
@@ -21,6 +27,7 @@ features = [
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_System_Environment",
+    "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",

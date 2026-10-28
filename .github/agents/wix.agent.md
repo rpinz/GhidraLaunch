@@ -22,6 +22,8 @@ An exit code of zero is not proof that the launcher and Ghidra were installed.
 
 - Use the repository-pinned WiX SDK/extensions and local tool manifest. Do not
   introduce WiX v3 production tooling; frozen v3 fixtures are migration tests only.
+- WiX warnings are errors (`Directory.Build.props`). Fix new ICE/WiX warnings;
+  add a suppression to `Installer.props` only with a documented reason.
 - Preserve Setup -> Core -> Java ordering. Finish genuine legacy cleanup before
   fresh Java detection, and retain the committed core if the Java stage fails.
   Temurin is a shared permanent prerequisite, not application-owned uninstall data.

@@ -45,56 +45,79 @@ class RustHelperBuildCommandTests(unittest.TestCase):
     def test_makefile_refreshes_existing_outputs_and_cleans_with_missing_debug(self):
         makefile = Path(__file__).resolve().parents[1] / "GhidraLaunchGhidraHelperRS/Makefile"
         commands = [line.strip() for line in makefile.read_text().splitlines() if line.startswith("\t")]
+        self.assertTrue(commands[2].startswith("cargo clean -p ghidra_launch_helper "), commands[2])
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            name = "GhidraLaunchGhidraHelperRS.exe"
+            # Cargo writes to the workspace target directory beside the member project.
+            workspace = Path(directory)
+            project = workspace / "GhidraLaunchGhidraHelperRS"
+            project.mkdir()
+            name = "GhidraLaunchGhidraHelperRS"
             for configuration, command in zip(("Debug", "Release"), commands[:2]):
-                source = root / "target" / configuration.lower() / name
-                source.parent.mkdir(parents=True)
-                destination = root / "bin" / configuration / name
                 command = command.split(" && ", 1)[1]
                 for content in (b"first", b"changed"):
-                    source.write_bytes(content)
+                    for extension in ("exe", "pdb"):
+                        source = workspace / "target" / configuration.lower() / f"{name}.{extension}"
+                        source.parent.mkdir(parents=True, exist_ok=True)
+                        source.write_bytes(content + extension.encode())
                     result = subprocess.run(
-                        ["cmd", "/d", "/c", command], cwd=root,
+                        ["cmd", "/d", "/c", command], cwd=project,
                         capture_output=True, timeout=30,
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertEqual(destination.read_bytes(), content)
-            (root / "bin/Debug" / name).unlink()
+                    for extension in ("exe", "pdb"):
+                        destination = project / "bin" / configuration / f"{name}.{extension}"
+                        self.assertEqual(destination.read_bytes(), content + extension.encode())
+            (project / "bin/Debug" / f"{name}.exe").unlink()
             result = subprocess.run(
                 ["cmd", "/d", "/c", "ver >nul && " + commands[2].split(" && ", 1)[1]],
-                cwd=root, capture_output=True, timeout=30,
+                cwd=project, capture_output=True, timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertFalse((root / "bin/Release" / name).exists())
+            self.assertEqual(list((project / "bin").rglob("*.*")), [])
+            self.assertTrue((workspace / "target/release" / f"{name}.exe").exists())
 
     def test_build_and_rebuild_copy_output_when_directory_exists(self):
-        project = Path(__file__).resolve().parents[1] / "GhidraLaunchGhidraHelperRS" / "GhidraLaunchGhidraHelperRS.vcxproj"
         namespace = "{http://schemas.microsoft.com/developer/msbuild/2003}"
-        root = ET.parse(project).getroot()
+        checkout = Path(__file__).resolve().parents[1]
+        for directory, package, name in (
+            ("GhidraLaunchGhidraHelperRS", "ghidra_launch_helper", "GhidraLaunchGhidraHelperRS"),
+            ("GhidraLaunchRS", "ghidra_launch", "GhidraLaunchRS"),
+        ):
+            project = checkout / directory / f"{directory}.vcxproj"
+            root = ET.parse(project).getroot()
+            for configuration in ("Debug", "Release"):
+                with self.subTest(project=directory, configuration=configuration):
+                    condition = f"'$(Configuration)|$(Platform)'=='{configuration}|x64'"
+                    group = next(
+                        element for element in root.findall(f"{namespace}PropertyGroup")
+                        if element.get("Condition") == condition and
+                        element.find(f"{namespace}NMakeBuildCommandLine") is not None
+                    )
+                    output_dir = f"bin\\{configuration}"
+                    target_dir = f"..\\target\\{configuration.lower()}"
+                    copy = (
+                        f"(if exist {output_dir} (ver >nul) else (mkdir {output_dir})) && "
+                        f"copy /y {target_dir}\\{name}.exe {output_dir}\\{name}.exe && "
+                        f"copy /y {target_dir}\\{name}.pdb {output_dir}\\{name}.pdb"
+                    )
+                    manifest = '--manifest-path "$(MSBuildThisFileDirectory)Cargo.toml"'
+                    profile = "--release" if configuration == "Release" else "--profile dev"
+                    # Package-scoped clean: one project's Clean/Rebuild must not wipe the other's outputs.
+                    clean = f"cargo clean {profile} -p {package} {manifest} && "
+                    remove = (
+                        f"(if exist {output_dir}\\{name}.exe (del /q {output_dir}\\{name}.exe)) && "
+                        f"(if exist {output_dir}\\{name}.pdb (del /q {output_dir}\\{name}.pdb))"
+                    )
 
-        for configuration in ("Debug", "Release"):
-            with self.subTest(configuration=configuration):
-                condition = f"'$(Configuration)|$(Platform)'=='{configuration}|x64'"
-                group = next(
-                    element for element in root.findall(f"{namespace}PropertyGroup")
-                    if element.get("Condition") == condition and
-                    element.find(f"{namespace}NMakeBuildCommandLine") is not None
-                )
-                output_dir = f"bin\\{configuration}"
-                target_dir = f"target\\{configuration.lower()}"
-                executable = "GhidraLaunchGhidraHelperRS.exe"
-                copy = f"(if exist {output_dir} (ver >nul) else (mkdir {output_dir})) && copy /y {target_dir}\\{executable} {output_dir}\\{executable}"
-
-                for command in ("NMakeBuildCommandLine", "NMakeReBuildCommandLine"):
-                    value = group.find(f"{namespace}{command}").text
-                    self.assertIn(copy, value)
-                makefile = (project.parent / "Makefile").read_text()
-                self.assertIn(copy, makefile)
-                rebuild = group.find(f"{namespace}NMakeReBuildCommandLine").text
-                remove = f"(if exist {output_dir}\\{executable} (del /q {output_dir}\\{executable})) &&"
-                self.assertIn(remove, rebuild)
+                    for command in ("NMakeBuildCommandLine", "NMakeReBuildCommandLine"):
+                        value = group.find(f"{namespace}{command}").text
+                        self.assertIn(copy, value)
+                        self.assertIn(f"--locked {manifest} && ", value)
+                    for command in ("NMakeCleanCommandLine", "NMakeReBuildCommandLine"):
+                        value = group.find(f"{namespace}{command}").text
+                        self.assertTrue(value.startswith(clean + remove), value)
+                    if directory == "GhidraLaunchGhidraHelperRS":
+                        self.assertIn(copy, (project.parent / "Makefile").read_text())
 
     @unittest.skipUnless(WINDOWS, "requires cmd.exe")
     def test_rebuild_executes_with_absent_outputs_and_propagates_failures(self):
@@ -111,16 +134,20 @@ class RustHelperBuildCommandTests(unittest.TestCase):
             command = command.replace("cargo clean", "call cargo.cmd clean").replace("cargo build", "call cargo.cmd build")
             for existing, failure in ((False, ""), (True, ""), (False, "clean"), (False, "build"), (False, "copy")):
                 with self.subTest(configuration=configuration, existing=existing, failure=failure), tempfile.TemporaryDirectory() as directory:
-                    work = Path(directory)
-                    name = "GhidraLaunchGhidraHelperRS.exe"
-                    source = work / "target" / configuration.lower() / name
-                    source.parent.mkdir(parents=True)
-                    if failure != "copy":
-                        source.write_bytes(b"rebuilt")
-                    destination = work / "bin" / configuration / name
+                    workspace = Path(directory)
+                    work = workspace / "GhidraLaunchGhidraHelperRS"
+                    work.mkdir()
+                    name = "GhidraLaunchGhidraHelperRS"
+                    for extension in ("exe", "pdb"):
+                        source = workspace / "target" / configuration.lower() / f"{name}.{extension}"
+                        source.parent.mkdir(parents=True, exist_ok=True)
+                        if failure != "copy":
+                            source.write_bytes(b"rebuilt")
+                    destination = work / "bin" / configuration / f"{name}.exe"
                     if existing:
                         destination.parent.mkdir(parents=True)
                         destination.write_bytes(b"old")
+                        destination.with_suffix(".pdb").write_bytes(b"old")
                     (work / "cargo.cmd").write_text(
                         '@echo off\n'
                         'echo %*>>calls.txt\n'
@@ -136,9 +163,11 @@ class RustHelperBuildCommandTests(unittest.TestCase):
                     if failure:
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertFalse(destination.exists())
+                        self.assertFalse(destination.with_suffix(".pdb").exists())
                     else:
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertEqual(destination.read_bytes(), b"rebuilt")
+                        self.assertEqual(destination.with_suffix(".pdb").read_bytes(), b"rebuilt")
                         self.assertEqual(len((work / "calls.txt").read_text().splitlines()), 2)
 
 
@@ -296,7 +325,7 @@ class RustHelperTests(unittest.TestCase):
 
     def test_guid_only_owner_and_ownerless_source_removal_rules(self):
         self.archive()
-        provider_key = "{B62B45B6-22D9-47E3-8EA2-41F5B4271BF9}"
+        provider_key = "{FEEDFACE-0000-4000-8000-0000000000B6}"
         self.run_helper("extract", self.zip, self.dest, provider_key)
         (self.dest / "support" / "\xe9.txt").write_bytes(b"user modification")
         self.assertEqual(
@@ -361,7 +390,7 @@ class RustHelperTests(unittest.TestCase):
     @unittest.skipUnless(PEER_EXE, "set RUST_HELPER_PEER_EXE to test C/Rust marker interoperation")
     def test_c_helper_reads_rust_guid_marker_and_removes_only_matching_owner(self):
         self.archive()
-        owner = "{B62B45B6-22D9-47E3-8EA2-41F5B4271BF9}"
+        owner = "{FEEDFACE-0000-4000-8000-0000000000B6}"
         other_owner = "{00000000-0000-0000-0000-000000000000}"
         self.run_helper("extract", self.zip, self.dest, owner)
 

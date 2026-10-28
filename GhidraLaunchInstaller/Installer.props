@@ -10,10 +10,14 @@
     <LauncherName Condition="'$(Variant)' == 'C'">GhidraLaunchC.exe</LauncherName>
     <LauncherName Condition="'$(Variant)' == 'Rust'">GhidraLaunchRS.exe</LauncherName>
     <LauncherPath Condition="'$(Variant)' == 'C'">$(SourceRoot)GhidraLaunchC\x64\$(Configuration)\bin\$(LauncherName)</LauncherPath>
-    <LauncherPath Condition="'$(Variant)' == 'Rust'">$(SourceRoot)GhidraLaunchRS\$(LauncherName)</LauncherPath>
+    <LauncherPath Condition="'$(Variant)' == 'Rust'">$(SourceRoot)GhidraLaunchRS\bin\$(Configuration)\$(LauncherName)</LauncherPath>
     <DefineConstants>$(DefineConstants);Variant=$(Variant);ReleaseVersion=$(ReleaseVersion);LauncherName=$(LauncherName);LauncherPath=$(LauncherPath)</DefineConstants>
-    <!-- Per-user layout and same-version replacement are intentional. -->
-    <SuppressIces>ICE61;ICE69;ICE91</SuppressIces>
+    <!-- Each suppression is an intentional design choice (re-verified: all four fire without it):
+         ICE61 - AllowSameVersionUpgrades: same-version C/Rust variant replacement.
+         ICE69 - the shortcuts' components reference [#LauncherFile] in another component of the same feature.
+         ICE80 - this x86 package reads CurrentBuildNumber through the 64-bit registry view (Bitness="always64").
+         ICE91 - per-user only package (Scope="perUser"; ALLUSERS is rejected), so profile paths are expected. -->
+    <SuppressIces>ICE61;ICE69;ICE80;ICE91</SuppressIces>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\GhidraLaunchC\GhidraLaunchC.vcxproj" Condition="'$(Variant)' == 'C'" SetPlatform="Platform=x64" />

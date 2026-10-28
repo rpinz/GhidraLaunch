@@ -3,24 +3,25 @@
 #![windows_subsystem = "windows"]
 
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Display;
 use std::io;
 use std::iter::once;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{exit, Command, Stdio};
+use std::process::{Command, Stdio, exit};
 use std::time::Duration;
 use windows_sys::{
-    Win32::Globalization::{MultiByteToWideChar, CP_ACP},
+    Win32::Globalization::{CP_ACP, MultiByteToWideChar},
     Win32::System::Environment::GetCommandLineW,
+    Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories},
     Win32::System::SystemInformation::GetSystemDirectoryW,
     Win32::System::Threading::CREATE_NO_WINDOW,
-    Win32::UI::WindowsAndMessaging::MessageBoxW,
     Win32::UI::WindowsAndMessaging::MB_ICONERROR,
     Win32::UI::WindowsAndMessaging::MB_SETFOREGROUND,
     Win32::UI::WindowsAndMessaging::MB_SYSTEMMODAL,
+    Win32::UI::WindowsAndMessaging::MessageBoxW,
 };
 
 // constant values
@@ -41,6 +42,7 @@ fn show_error(message: &str, code: impl Display) {
     let text = to_wide(&format!("Failed to launch Ghidra!\n{message} {code}"));
     let caption = to_wide(APPLICATION_NAME);
 
+    // SAFETY: both strings are NUL-terminated and outlive the call; a null owner window is allowed.
     unsafe {
         _ = MessageBoxW(
             std::ptr::null_mut(),
@@ -52,8 +54,12 @@ fn show_error(message: &str, code: impl Display) {
 }
 
 // display message box for an io::Error and return a failure exit code
-fn fail(message: &str, error: io::Error) -> i32 {
-    show_error(message, error.raw_os_error().unwrap_or(EXIT_FAILURE) as u32);
+fn fail(message: &str, error: &io::Error) -> i32 {
+    // Win32 error codes and NTSTATUS-style exit codes are shown unsigned, as Windows reports them
+    show_error(
+        message,
+        error.raw_os_error().unwrap_or(EXIT_FAILURE).cast_unsigned(),
+    );
     EXIT_FAILURE
 }
 
@@ -62,11 +68,15 @@ fn system_directory() -> io::Result<PathBuf> {
     let mut buffer: Vec<u16> = vec![0; 260];
 
     loop {
-        let length =
-            unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+        let capacity = u32::try_from(buffer.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "system directory too long"))?;
+        // SAFETY: the buffer is writable for buffer.len() (== capacity) UTF-16 units.
+        let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), capacity) };
         if length == 0 {
             return Err(io::Error::last_os_error());
         }
+        let length = usize::try_from(length)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "system directory too long"))?;
         if length < buffer.len() {
             buffer.truncate(length);
             return Ok(PathBuf::from(OsString::from_wide(&buffer)));
@@ -76,36 +86,53 @@ fn system_directory() -> io::Result<PathBuf> {
     }
 }
 
-// text printed by a process in the ANSI code page, split into non-empty lines
-fn ansi_lines(bytes: &[u8]) -> Vec<String> {
+// text printed by a process in the ANSI code page, split into non-empty lines; None when the
+// output cannot be converted. Lines stay native (UTF-16) because they become paths and arguments.
+fn ansi_lines(bytes: &[u8]) -> Option<Vec<OsString>> {
     if bytes.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
     }
-    let text = unsafe {
-        let length = MultiByteToWideChar(
-            CP_ACP,
-            0,
-            bytes.as_ptr(),
-            bytes.len() as i32,
-            std::ptr::null_mut(),
-            0,
-        );
-        let mut wide = vec![0u16; length.max(0) as usize];
-        let written = MultiByteToWideChar(
-            CP_ACP,
-            0,
-            bytes.as_ptr(),
-            bytes.len() as i32,
-            wide.as_mut_ptr(),
-            length,
-        );
-        wide.truncate(written.max(0) as usize);
-        String::from_utf16_lossy(&wide)
-    };
-    text.split(['\r', '\n'])
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect()
+    let count = i32::try_from(bytes.len()).ok()?;
+    // SAFETY: bytes is readable for count bytes; with a null buffer and zero size the call only
+    // measures the required UTF-16 length.
+    let length =
+        unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), count, std::ptr::null_mut(), 0) };
+    let mut wide = vec![0u16; usize::try_from(length).ok().filter(|&length| length > 0)?];
+    // SAFETY: bytes is readable for count bytes and wide is writable for exactly length units.
+    let written =
+        unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), count, wide.as_mut_ptr(), length) };
+    wide.truncate(
+        usize::try_from(written)
+            .ok()
+            .filter(|&written| written > 0)?,
+    );
+    Some(
+        wide.split(|&unit| unit == u16::from(b'\r') || unit == u16::from(b'\n'))
+            .filter(|line| !line.is_empty())
+            .map(OsString::from_wide)
+            .collect(),
+    )
+}
+
+// arguments joined by single spaces, as launch.bat expands them
+fn join_arguments(parts: &[OsString]) -> OsString {
+    let mut joined = OsString::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            joined.push(" ");
+        }
+        joined.push(part);
+    }
+    joined
+}
+
+// concatenation of native and literal pieces without a lossy round trip through UTF-8
+fn concat(pieces: &[&OsStr]) -> OsString {
+    let mut joined = OsString::new();
+    for piece in pieces {
+        joined.push(piece);
+    }
+    joined
 }
 
 // java that runs, like launch.bat: PATH first, then JAVA_HOME
@@ -136,7 +163,7 @@ fn launch_support(
     directory: &Path,
     option: &str,
     capture: bool,
-) -> Option<Vec<String>> {
+) -> Option<Vec<OsString>> {
     let jar = directory.join("support").join("LaunchSupport.jar");
     let mut arguments = OsString::from("-cp \"");
     arguments.push(jar);
@@ -157,22 +184,23 @@ fn launch_support(
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
-    output.status.success().then(|| ansi_lines(&output.stdout))
+    if !output.status.success() {
+        return None;
+    }
+    ansi_lines(&output.stdout)
 }
 
-// non-empty value of an environment variable
-fn env_text(name: &str) -> Option<String> {
-    env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string_lossy().into_owned())
+// non-empty value of an environment variable, kept native for use in command lines
+fn env_text(name: impl AsRef<OsStr>) -> Option<OsString> {
+    env::var_os(name).filter(|value| !value.is_empty())
 }
 
 // Start Ghidra the way ghidraRun.bat and support\launch.bat do, without cmd.exe.
 // Returns None when that is not possible so the caller can fall back to ghidraRun.bat.
 fn launch_native(directory: &Path, jdk_error: &mut bool) -> Option<i32> {
     // launch.bat rejects '!' in the path and a trailing backslash would escape the quotes below
-    let text = directory.to_string_lossy();
-    if text.ends_with('\\') || text.contains('!') {
+    let units: Vec<u16> = directory.as_os_str().encode_wide().collect();
+    if units.last() == Some(&u16::from(b'\\')) || units.contains(&u16::from(b'!')) {
         return None;
     }
 
@@ -204,34 +232,45 @@ fn launch_native(directory: &Path, jdk_error: &mut bool) -> Option<i32> {
 
     // environment variables requested by launch.properties never override existing ones
     for line in launch_support(&java, directory, "-envvars", true)? {
-        if let Some((name, value)) = line.split_once('=') {
-            if !name.is_empty() && env_text(name).is_none() {
-                env::set_var(name, value);
+        let units: Vec<u16> = line.encode_wide().collect();
+        if let Some(split) = units.iter().position(|&unit| unit == u16::from(b'='))
+            && split > 0
+        {
+            let name = OsString::from_wide(&units[..split]);
+            if env_text(&name).is_none() {
+                let value = OsString::from_wide(&units[split + 1..]);
+                // SAFETY: the launcher is single-threaded; no other thread reads or writes the environment.
+                unsafe { env::set_var(name, value) };
             }
         }
     }
 
     // command line in the order launch.bat builds it
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts: Vec<OsString> = Vec::new();
     parts.extend(env_text("FORCE_JAVA_VERSION"));
     parts.extend(env_text("JAVA_USER_HOME_DIR_OVERRIDE"));
     parts.extend(launch_support(&java, directory, "-vmargs", true)?);
     if let Some(profile) = env_text("USERPROFILE").filter(|profile| Path::new(profile).exists()) {
-        parts.push(format!("-Duser.home=\"{profile}\""));
+        parts.push(concat(&[
+            OsStr::new("-Duser.home=\""),
+            &profile,
+            OsStr::new("\""),
+        ]));
     }
     // GHIDRA_GUI_MAXMEM defaults to GHIDRA_MAXMEM
     if let Some(memory) = env_text("GHIDRA_GUI_MAXMEM").or_else(|| env_text("GHIDRA_MAXMEM")) {
-        parts.push(format!("-Xmx{memory}"));
+        parts.push(concat(&[OsStr::new("-Xmx"), &memory]));
     }
     parts.extend(env_text("GHIDRA_JAVA_OPTIONS"));
     parts.extend(env_text("GHIDRA_GUI_JAVA_OPTIONS"));
-    parts.push(format!(
-        "-cp \"{}\" ghidra.Ghidra ghidra.GhidraRun",
-        utility.display()
-    ));
+    parts.push(concat(&[
+        OsStr::new("-cp \""),
+        utility.as_os_str(),
+        OsStr::new("\" ghidra.Ghidra ghidra.GhidraRun"),
+    ]));
 
     let mut child = Command::new(javaw)
-        .raw_arg(parts.join(" "))
+        .raw_arg(join_arguments(&parts))
         .args(env::args_os().skip(1))
         .current_dir(directory)
         .creation_flags(CREATE_NO_WINDOW)
@@ -250,6 +289,8 @@ fn launch_native(directory: &Path, jdk_error: &mut bool) -> Option<i32> {
 }
 
 fn raw_arguments() -> OsString {
+    // SAFETY: GetCommandLineW returns a NUL-terminated string that lives for the whole process;
+    // the slice covers exactly the units before the terminator.
     let command = unsafe {
         let pointer = GetCommandLineW();
         let mut length = 0;
@@ -261,7 +302,7 @@ fn raw_arguments() -> OsString {
     let mut index = 0;
     let mut quoted = false;
     while index < command.len() {
-        if command[index] == b'"' as u16 {
+        if command[index] == u16::from(b'"') {
             quoted = !quoted;
         } else if !quoted && matches!(command[index], 9 | 32) {
             break;
@@ -279,25 +320,24 @@ fn launch() -> i32 {
     // use GHIDRA_HOME when set, otherwise look next to the launcher
     let executable = match env::current_exe() {
         Ok(executable) => executable,
-        Err(error) => return fail("Unable to locate the launcher, error", error),
+        Err(error) => return fail("Unable to locate the launcher, error", &error),
     };
     let directory = match executable.parent() {
         Some(directory) => env::var_os("GHIDRA_HOME")
             .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| directory.to_path_buf()),
+            .map_or_else(|| directory.to_path_buf(), PathBuf::from),
         None => {
             return fail(
                 "Unable to locate the launcher, error",
-                io::Error::from_raw_os_error(ERROR_BAD_PATHNAME),
-            )
+                &io::Error::from_raw_os_error(ERROR_BAD_PATHNAME),
+            );
         }
     };
     // Resolve GHIDRA_HOME before using it both in Java arguments and as the
     // child's working directory; otherwise relative classpaths are doubled.
     let directory = match std::path::absolute(&directory) {
         Ok(directory) => directory,
-        Err(error) => return fail("Unable to resolve the Ghidra directory, error", error),
+        Err(error) => return fail("Unable to resolve the Ghidra directory, error", &error),
     };
 
     // start Ghidra directly; fall back to ghidraRun.bat when that is not possible
@@ -305,7 +345,7 @@ fn launch() -> i32 {
     match launch_native(&directory, &mut jdk_error) {
         Some(EXIT_SUCCESS) => return EXIT_SUCCESS,
         Some(code) => {
-            show_error("Ghidra exited with code", code as u32);
+            show_error("Ghidra exited with code", code.cast_unsigned());
             return code;
         }
         None => {}
@@ -325,20 +365,20 @@ fn launch() -> i32 {
                 "Ghidra could not be started: ghidraRun.bat not found in {} (GHIDRA_HOME or the launcher folder), error",
                 directory.display()
             ),
-            io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND),
+            &io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND),
         );
     }
 
     // absolute path to cmd.exe, never resolved through the search path
     let cmd = match system_directory() {
         Ok(system) => system.join("cmd.exe"),
-        Err(error) => return fail("Unable to locate cmd.exe, error", error),
+        Err(error) => return fail("Unable to locate cmd.exe, error", &error),
     };
 
     // cmd.exe cannot use a UNC working directory; local paths stay out of its command text
     let mut directory_units = directory.as_os_str().encode_wide();
-    let unc = directory_units.next() == Some(b'\\' as u16)
-        && directory_units.next() == Some(b'\\' as u16);
+    let unc = directory_units.next() == Some(u16::from(b'\\'))
+        && directory_units.next() == Some(u16::from(b'\\'));
     let batch = if unc {
         directory.join(BATCH_FILE)
     } else {
@@ -359,7 +399,7 @@ fn launch() -> i32 {
         Ok(status) => match status.code() {
             Some(EXIT_SUCCESS) => EXIT_SUCCESS,
             Some(code) => {
-                show_error("ghidraRun.bat exited with code", code as u32);
+                show_error("ghidraRun.bat exited with code", code.cast_unsigned());
                 code
             }
             None => {
@@ -367,11 +407,48 @@ fn launch() -> i32 {
                 EXIT_FAILURE
             }
         },
-        Err(error) => fail("Unable to start cmd.exe, error", error),
+        Err(error) => fail("Unable to start cmd.exe, error", &error),
     }
 }
 
 // main entrypoint
 fn main() {
+    // never load DLLs from the application or current directory (hardening only, not fatal)
+    // SAFETY: valid flag; affects only this process's DLL search order.
+    unsafe {
+        SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }
     exit(launch());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ansi_output_lines_are_split_without_empty_entries() {
+        assert_eq!(ansi_lines(b""), Some(Vec::new()));
+        assert_eq!(
+            ansi_lines(b"C:\\jdk\r\n\r\nNAME=value\n"),
+            Some(vec![
+                OsString::from("C:\\jdk"),
+                OsString::from("NAME=value")
+            ])
+        );
+    }
+
+    #[test]
+    fn command_line_pieces_keep_unpaired_surrogates() {
+        let native = OsString::from_wide(&[u16::from(b'a'), 0xd800]);
+        let joined = join_arguments(&[
+            concat(&[OsStr::new("-Xmx"), &native]),
+            OsString::from("-cp"),
+        ]);
+        let expected: Vec<u16> = "-Xmxa"
+            .encode_utf16()
+            .chain([0xd800])
+            .chain(" -cp".encode_utf16())
+            .collect();
+        assert_eq!(joined.encode_wide().collect::<Vec<_>>(), expected);
+    }
 }

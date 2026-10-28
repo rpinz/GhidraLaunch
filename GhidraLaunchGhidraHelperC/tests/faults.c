@@ -846,7 +846,7 @@ static BOOL legacy_case(const wchar_t *parent, LegacyCase test)
             legacy_records[i] = legacy_records[0];
             legacy_records[i].scope = i % 2;
             legacy_records[i].view = i / 2 % 2;
-            legacy_records[i].version = i % 2 ? L"not-a-version" : L"999.0.0";
+            legacy_records[i].version = (i % 2) ? L"not-a-version" : L"999.0.0";
             legacy_records[i].cache = L"must never be accessed";
         }
         legacy_records[0].name = L"Unrelated Application";

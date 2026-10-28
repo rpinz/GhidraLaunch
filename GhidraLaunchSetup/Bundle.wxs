@@ -14,6 +14,8 @@
   <Bundle Name="$(var.BundleName)" Manufacturer="$(var.BundleManufacturer)" Version="$(var.ReleaseVersion)"
           Tag="$(var.Variant)"
           AboutUrl="$(var.AboutUrl)"
+          HelpUrl="$(var.AboutUrl)"
+          DisableModify="yes"
           Copyright="$(var.BundleCopyright)"
           IconSourceFile="..\Resources\Ghidra.ico"
           UpgradeCode="{933B00E3-642F-4745-946E-15FC9F064B43}"

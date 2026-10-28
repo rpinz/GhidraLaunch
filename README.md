@@ -110,16 +110,48 @@ Use Visual Studio 2022 with the Desktop development with C++ workload, the
 Windows SDK, and Rust's `x86_64-pc-windows-msvc` target. The shared
 `rust-toolchain.toml` pins Rust 1.99.1 with rustfmt and Clippy; restore it with
 `rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy`.
+Use rustup's `cargo` (`%USERPROFILE%\.cargo\bin` first on `PATH`); a standalone Rust
+install ignores `rust-toolchain.toml`.
 Open
-`GhidraLaunch.sln` and build the x64 Debug or Release configuration. The Rust
-project uses `cargo build --locked`; commit `GhidraLaunchRS/Cargo.lock` when
-updating dependencies. Visual Studio Rebuild cleans and rebuilds the Rust
-projects. The Rust helper has its own checked-in
-`GhidraLaunchGhidraHelperRS/Cargo.lock`; its ZIP/SHA-256 dependencies are
-independent of the launcher.
+`GhidraLaunch.sln` and build the x64 Debug or Release configuration. Both Rust
+crates are members of one Cargo workspace (root `Cargo.toml`) with a single
+checked-in `Cargo.lock`, shared release profile, lints and rustflags
+(`.cargo/config.toml`); Cargo builds into the root `target/` with `--locked`, so
+commit `Cargo.lock` when updating dependencies. Visual Studio Clean/Rebuild cleans
+only the selected Rust package before rebuilding it. Native outputs are per
+configuration: `GhidraLaunchC/x64/<Configuration>/bin/GhidraLaunchC.exe`,
+`GhidraLaunchRS/bin/<Configuration>/GhidraLaunchRS.exe` and the matching helper
+paths; each Rust executable is copied there with its PDB. The helper's ZIP/SHA-256
+dependencies are not linked into the launcher.
+
+From the repository root, check the Rust workspace with:
+
+```powershell
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo deny check   # cargo install cargo-deny --locked; policy in deny.toml
+```
+
+All four executables link the CRT statically, are built with Control Flow Guard,
+CET shadow-stack compatibility and System32-only DLL loading, and embed an
+application manifest (`Resources/application.manifest` for the launchers,
+`Resources/helper.manifest` for the helpers: `asInvoker`, Windows 10/11
+supportedOS, long-path aware). C projects build at `/W4 /WX` with static analysis
+(`/analyze`; SDK headers are treated as external), `/utf-8`, `/ZH:SHA_256`, and
+reproducible Release output (`/Brepro`); vendored miniz builds at `/W3` without
+analysis. CI checks every executable with `dumpbin` for Control Flow Guard, CET
+compatibility and the absence of dynamic-CRT imports, and runs `cargo deny`.
+The Rust crates use edition 2024, Clippy's pedantic group, overflow checks in
+Release, and require a `// SAFETY:` comment on every `unsafe` block
+(`clippy::undocumented_unsafe_blocks`).
+
+WiX builds treat warnings (including ICE validation) as errors
+(`Directory.Build.props`); the intentional ICE61/69/80/91 exceptions are listed
+with their reasons in `GhidraLaunchInstaller/Installer.props`.
 
 Installer builds additionally require the .NET 8 SDK and restored WiX **5.0.2**
-SDK/extensions. Run `dotnet tool restore` for the pinned WiX CLI; no globally
+SDK/extensions (SDK version pinned once in `global.json`). Run `dotnet tool restore` for the pinned WiX CLI; no globally
 installed WiX v3 tools are used. .NET is a build prerequisite only.
 All bundle stages (Setup, Core, Java) share one source,
 `GhidraLaunchSetup/Bundle.wxs`; the per-variant `.wixproj` files only pick the
@@ -159,7 +191,9 @@ newer-version switching using synthetic upstream packages. A separate test-only 
 executable exercises backup, install, rollback and cleanup failures; it is never
 packaged. Build it locally with `./scripts/build.ps1 -Target Faults`.
 Build/version, signing, SBOM and publication contract tests also run before
-release in ordinary CI. The legacy migration
+release in ordinary CI. `tests/test_guid_uniqueness.py` fails if a production
+identity GUID (project, upgrade code, component) is defined twice or reuses one of
+the sibling HostsEditor project's GUIDs. The legacy migration
 test downloads checksum-pinned WiX v3 tools and compiles a frozen managed helper
 fixture solely to exercise the old cached-uninstaller behavior; neither is part
 of production builds or distributed installers. CI does not download Ghidra or
@@ -349,7 +383,8 @@ It runs the checks
 (`tests/launchers.ps1`, `tests/ghidra-helper.ps1`, `tests/installer.ps1`) and
 generates SPDX 2.3 and CycloneDX JSON
 SBOMs: they include hashes for all four installer artifacts, the two launchers,
-both extraction helpers, the three internal bundles, Syft's inventories of both Rust lockfiles, the
+both extraction helpers, the three internal bundles, Syft's inventory of the Rust workspace lockfile
+(each Rust executable linked to its own package), the
 vendored C ZIP library's version/license/source provenance, and
 versioned URL/SHA-256 references to Ghidra and Temurin. Ghidra and Temurin are
 fetched at install time, not embedded; their full component inventories are

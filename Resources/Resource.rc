@@ -56,6 +56,22 @@ IDI_ICON1               ICON                    "..\\Resources\\Ghidra.ico"
 
 #include "Version.h"
 
+// GhidraLaunchRS/build.rs defines GHIDRA_LAUNCH_RS when compiling the Rust launcher
+#ifdef GHIDRA_LAUNCH_RS
+#define GHIDRA_LAUNCH_INTERNAL_NAME "GhidraLaunchRS"
+#define GHIDRA_LAUNCH_ORIGINAL_FILENAME "GhidraLaunchRS.exe"
+#else
+#define GHIDRA_LAUNCH_INTERNAL_NAME "GhidraLaunchC"
+#define GHIDRA_LAUNCH_ORIGINAL_FILENAME "GhidraLaunchC.exe"
+#endif
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Manifest
+//
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "..\\Resources\\application.manifest"
+
 /////////////////////////////////////////////////////////////////////////////
 //
 // Version
@@ -78,12 +94,12 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "GhidraLaunch"
+            VALUE "CompanyName", "rpinz"
             VALUE "FileDescription", "Launch Ghidra ghidraRun.bat without console window"
             VALUE "FileVersion", GHIDRA_LAUNCH_VERSION
-            VALUE "InternalName", "GhidraLaunch.exe"
+            VALUE "InternalName", GHIDRA_LAUNCH_INTERNAL_NAME
             VALUE "LegalCopyright", "The Unlicense"
-            VALUE "OriginalFilename", "GhidraLaunch.exe"
+            VALUE "OriginalFilename", GHIDRA_LAUNCH_ORIGINAL_FILENAME
             VALUE "ProductName", "Ghidra Launch"
             VALUE "ProductVersion", GHIDRA_LAUNCH_PRODUCT_VERSION
         END

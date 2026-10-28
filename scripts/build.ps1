@@ -18,7 +18,7 @@ Push-Location $root
 try {
     $launchers = @(
         "$root/GhidraLaunchC/x64/$Configuration/bin/GhidraLaunchC.exe",
-        "$root/GhidraLaunchRS/GhidraLaunchRS.exe"
+        "$root/GhidraLaunchRS/bin/$Configuration/GhidraLaunchRS.exe"
     )
     $helpers = @(
         "$root/GhidraLaunchGhidraHelperC/x64/$Configuration/bin/GhidraLaunchGhidraHelperC.exe",

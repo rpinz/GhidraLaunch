@@ -31,6 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Resolve release tag
@@ -123,6 +124,7 @@ jobs:
           name: release-upgrade-logs
           path: ${{ runner.temp }}/upgrade-logs/
           if-no-files-found: warn
+          retention-days: 14
 
       - name: Verify first-party executable metadata
         shell: pwsh
@@ -130,7 +132,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $paths = @(
             'GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe',
-            'GhidraLaunchRS/GhidraLaunchRS.exe',
+            'GhidraLaunchRS/bin/Release/GhidraLaunchRS.exe',
             'GhidraLaunchGhidraHelperC/x64/Release/bin/GhidraLaunchGhidraHelperC.exe',
             'GhidraLaunchGhidraHelperRS/bin/Release/GhidraLaunchGhidraHelperRS.exe'
           )
@@ -148,7 +150,7 @@ jobs:
           $staging = Join-Path $env:RUNNER_TEMP 'signpath-first-party'
           New-Item -ItemType Directory -Path $staging -Force | Out-Null
           Copy-Item GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe $staging
-          Copy-Item GhidraLaunchRS/GhidraLaunchRS.exe $staging
+          Copy-Item GhidraLaunchRS/bin/Release/GhidraLaunchRS.exe $staging
           Copy-Item GhidraLaunchGhidraHelperC/x64/Release/bin/GhidraLaunchGhidraHelperC.exe $staging
           Copy-Item GhidraLaunchGhidraHelperRS/bin/Release/GhidraLaunchGhidraHelperRS.exe $staging
 
@@ -160,6 +162,7 @@ jobs:
           name: signpath-first-party
           path: ${{ runner.temp }}/signpath-first-party/
           if-no-files-found: error
+          retention-days: 7
 
       - name: Submit first-party executables for SignPath approval and signing
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -185,7 +188,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $files = @(
             @{ Name = 'GhidraLaunchC.exe'; Path = 'GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe' },
-            @{ Name = 'GhidraLaunchRS.exe'; Path = 'GhidraLaunchRS/GhidraLaunchRS.exe' },
+            @{ Name = 'GhidraLaunchRS.exe'; Path = 'GhidraLaunchRS/bin/Release/GhidraLaunchRS.exe' },
             @{ Name = 'GhidraLaunchGhidraHelperC.exe'; Path = 'GhidraLaunchGhidraHelperC/x64/Release/bin/GhidraLaunchGhidraHelperC.exe' },
             @{ Name = 'GhidraLaunchGhidraHelperRS.exe'; Path = 'GhidraLaunchGhidraHelperRS/bin/Release/GhidraLaunchGhidraHelperRS.exe' }
           )
@@ -218,6 +221,7 @@ jobs:
           name: signpath-msi
           path: ${{ runner.temp }}/signpath-msi/
           if-no-files-found: error
+          retention-days: 7
 
       - name: Submit MSI for SignPath approval and signing
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -267,6 +271,7 @@ jobs:
           name: signpath-internal-engines
           path: ${{ runner.temp }}/signpath-internal-engines/
           if-no-files-found: error
+          retention-days: 7
 
       - name: Sign internal bundle engines
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -306,6 +311,7 @@ jobs:
           name: signpath-internal
           path: ${{ runner.temp }}/signpath-internal/
           if-no-files-found: error
+          retention-days: 7
 
       - name: Sign internal native bundles
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -352,6 +358,7 @@ jobs:
           name: signpath-setup-engines
           path: ${{ runner.temp }}/signpath-setup-engines/
           if-no-files-found: error
+          retention-days: 7
 
       - name: Sign setup bundle engines
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -392,6 +399,7 @@ jobs:
           name: signpath-setup
           path: ${{ runner.temp }}/signpath-setup/
           if-no-files-found: error
+          retention-days: 7
 
       - name: Submit setup bundle for SignPath approval and signing
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -474,6 +482,7 @@ jobs:
           name: winget-manifests
           path: winget/out/
           if-no-files-found: ignore
+          retention-days: 30
 
       - name: Hand off release files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -481,6 +490,7 @@ jobs:
           name: release-files
           path: release-assets/
           if-no-files-found: error
+          retention-days: 30
 
   publish:
     needs: build

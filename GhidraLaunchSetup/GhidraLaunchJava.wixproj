@@ -1,4 +1,4 @@
-<Project Sdk="WixToolset.Sdk/5.0.2">
+<Project Sdk="WixToolset.Sdk">
   <PropertyGroup><Stage>Java</Stage></PropertyGroup>
   <Import Project="Setup.props" />
 </Project>

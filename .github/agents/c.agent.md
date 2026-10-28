@@ -21,6 +21,11 @@ Make focused fixes rather than redesigning adjacent subsystems.
 
 - Follow the existing C17, MSVC v143, Unicode Win32, and static CRT conventions.
   Keep the production executables native, with no new runtime extraction tools.
+- Bound string formatting with `<strsafe.h>` `StringCch*` when truncation must be
+  handled: MSVC `*_s` functions terminate the process on overflow instead of
+  returning an error. Keep `/W4 /WX` and `/analyze` clean; vendored miniz alone
+  builds at `/W3` without analysis. Fix analysis findings or annotate with SAL;
+  suppress only proven false positives, narrowly and with a reason.
 - Check allocation, buffer bounds, Win32 return values, and handle lifetimes.
   Preserve UTF-16 paths and distinguish missing files from access or I/O errors.
 - Keep Windows icon/version resources intact. Use the existing version-stamping

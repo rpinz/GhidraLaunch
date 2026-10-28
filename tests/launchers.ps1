@@ -65,7 +65,7 @@ try {
     $binaries = if ($LauncherPath) { @($LauncherPath | ForEach-Object { (Resolve-Path -LiteralPath $_).Path }) } else {
         @(
             (Join-Path $root "GhidraLaunchC/x64/$Configuration/bin/GhidraLaunchC.exe"),
-            (Join-Path $root 'GhidraLaunchRS/GhidraLaunchRS.exe')
+            (Join-Path $root "GhidraLaunchRS/bin/$Configuration/GhidraLaunchRS.exe")
         )
     }
     foreach ($binary in $binaries) {
@@ -197,6 +197,10 @@ public static class LauncherDialog {
     }
 }
 '@
+
+    # The launchers run from $scratch. A java.exe there must never be chosen over PATH/JAVA_HOME:
+    # this decoy (cmd.exe) succeeds on -version but cannot run LaunchSupport, so picking it fails the launch.
+    Copy-Item -LiteralPath (Join-Path ([Environment]::SystemDirectory) 'cmd.exe') -Destination (Join-Path $scratch 'java.exe')
 
     foreach ($binary in $binaries) {
         $name = [IO.Path]::GetFileNameWithoutExtension($binary)

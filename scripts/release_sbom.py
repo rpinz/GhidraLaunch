@@ -19,7 +19,7 @@ FILES = {
     "installer-c": ("GhidraLaunchInstallerC", "GhidraLaunchInstaller/bin/Release/GhidraLaunchInstallerC.msi"),
     "installer-rust": ("GhidraLaunchInstallerRust", "GhidraLaunchInstaller/bin/Release/GhidraLaunchInstallerRust.msi"),
     "c": ("GhidraLaunchC", "GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe"),
-    "rust": ("GhidraLaunchRS", "GhidraLaunchRS/GhidraLaunchRS.exe"),
+    "rust": ("GhidraLaunchRS", "GhidraLaunchRS/bin/Release/GhidraLaunchRS.exe"),
     "helper-c": ("GhidraLaunchGhidraHelperC", "GhidraLaunchGhidraHelperC/x64/Release/bin/GhidraLaunchGhidraHelperC.exe"),
     "helper-rust": ("GhidraLaunchGhidraHelperRS", "GhidraLaunchGhidraHelperRS/bin/Release/GhidraLaunchGhidraHelperRS.exe"),
     "core-c": ("GhidraLaunchCoreC", "GhidraLaunchSetup/bin/Release/GhidraLaunchCoreC.exe"),
@@ -27,9 +27,12 @@ FILES = {
     "java": ("GhidraLaunchJava", "GhidraLaunchSetup/bin/Release/GhidraLaunchJava.exe"),
 }
 PUBLISHED = ("setup-c", "setup-rust", "installer-c", "installer-rust")
+# Both Rust executables are members of one Cargo workspace with a single lockfile; each
+# artifact links to its own package, whose locked dependency edges Syft records.
+RUST_LOCKFILE = "Cargo.lock"
 RUST_PROJECTS = {
-    "rust": ("GhidraLaunchRS", "ghidra_launch"),
-    "helper-rust": ("GhidraLaunchGhidraHelperRS", "ghidra_launch_helper"),
+    "rust": "ghidra_launch",
+    "helper-rust": "ghidra_launch_helper",
 }
 LINKS = {
     "setup-c": ("core-c", "helper-c", "java"),
@@ -156,7 +159,7 @@ def enrich_spdx(document, components):
                 "relatedSpdxElement": ids[child],
                 "relationshipType": "DEPENDS_ON",
             })
-    for key, (_, name) in RUST_PROJECTS.items():
+    for key, name in RUST_PROJECTS.items():
         rust = next((p for p in document["packages"] if p["name"] == name), None)
         if rust is None:
             raise ValueError(f"Syft did not inventory Rust package {name}")
@@ -200,7 +203,7 @@ def enrich_cyclonedx(document, components):
             "ref": refs[parent],
             "dependsOn": [refs[child] for child in children],
         })
-    for key, (_, name) in RUST_PROJECTS.items():
+    for key, name in RUST_PROJECTS.items():
         rust = next((c for c in document["components"] if c["name"] == name), None)
         if rust is None:
             raise ValueError(f"Syft did not inventory Rust package {name}")
@@ -215,10 +218,7 @@ def generate(root, output, tag, syft):
             dest = stage / components[key]["path"].relative_to(root)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(components[key]["path"], dest)
-        for directory, _ in RUST_PROJECTS.values():
-            dest = stage / directory
-            dest.mkdir(parents=True, exist_ok=True)
-            (dest / "Cargo.lock").write_bytes((root / directory / "Cargo.lock").read_bytes())
+        (stage / RUST_LOCKFILE).write_bytes((root / RUST_LOCKFILE).read_bytes())
         spdx_path = stage / "spdx.json"
         cyclonedx_path = stage / "cyclonedx.json"
         subprocess.run([

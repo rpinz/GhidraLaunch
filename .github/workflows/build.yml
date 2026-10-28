@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   launchers:
     runs-on: windows-2022
@@ -17,6 +21,8 @@ jobs:
         configuration: [Debug, Release]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Restore pinned WiX v5 tooling
         shell: pwsh
         run: dotnet tool restore
@@ -28,13 +34,27 @@ jobs:
         run: |
           ./scripts/build.ps1 -Configuration ${{ matrix.configuration }}
           ./scripts/build.ps1 -Configuration ${{ matrix.configuration }} -Rebuild
-          foreach ($manifest in @('GhidraLaunchRS\Cargo.toml', 'GhidraLaunchGhidraHelperRS\Cargo.toml')) {
-            cargo fmt --manifest-path $manifest --check
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            cargo test --manifest-path $manifest --locked
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            cargo clippy --manifest-path $manifest --locked -- -D warnings
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fmt --all --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --workspace --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check executable hardening
+        shell: pwsh
+        run: |
+          $configuration = '${{ matrix.configuration }}'
+          $dumpbin = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -Last 1
+          foreach ($exe in @(
+              "GhidraLaunchC/x64/$configuration/bin/GhidraLaunchC.exe",
+              "GhidraLaunchGhidraHelperC/x64/$configuration/bin/GhidraLaunchGhidraHelperC.exe",
+              "GhidraLaunchRS/bin/$configuration/GhidraLaunchRS.exe",
+              "GhidraLaunchGhidraHelperRS/bin/$configuration/GhidraLaunchGhidraHelperRS.exe")) {
+            $imports = & $dumpbin.FullName /nologo /dependents $exe
+            if ($imports -match '(?i)vcruntime|msvcp|api-ms-win-crt|ucrtbase') { throw "$exe links the dynamic CRT" }
+            $headers = & $dumpbin.FullName /nologo /headers $exe
+            if (-not ($headers -match '^\s+Control Flow Guard$')) { throw "$exe is not built with Control Flow Guard" }
+            if (-not ($headers -match '^\s+CET compatible$')) { throw "$exe is not marked CET compatible" }
           }
       - name: Exercise both launchers
         shell: pwsh
@@ -81,12 +101,15 @@ jobs:
           name: upgrade-logs
           path: ${{ runner.temp }}/upgrade-logs/
           if-no-files-found: warn
+          retention-days: 14
 
   release-contracts:
     runs-on: windows-2022
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: '3.12'
@@ -98,3 +121,13 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'test_*.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # advisories, licenses, bans and sources (deny.toml); the action is a Linux container
+  cargo-deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1

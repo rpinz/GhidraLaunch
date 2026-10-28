@@ -18,7 +18,7 @@ $script:invocation = 0
 $originals = @(
     'Resources/Version.h',
     'GhidraLaunchC/x64/Release/bin/GhidraLaunchC.exe',
-    'GhidraLaunchRS/GhidraLaunchRS.exe',
+    'GhidraLaunchRS/bin/Release/GhidraLaunchRS.exe',
     'GhidraLaunchGhidraHelperC/x64/Release/bin/GhidraLaunchGhidraHelperC.exe',
     'GhidraLaunchGhidraHelperRS/bin/Release/GhidraLaunchGhidraHelperRS.exe'
 )

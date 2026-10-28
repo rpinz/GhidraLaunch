@@ -22,10 +22,7 @@ class ReleaseSbomTests(unittest.TestCase):
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(("fixture-" + key).encode())
-        for directory, _ in SBOM.RUST_PROJECTS.values():
-            (self.root / directory / "Cargo.lock").write_bytes(
-                (SCRIPT.parents[1] / directory / "Cargo.lock").read_bytes()
-            )
+        (self.root / SBOM.RUST_LOCKFILE).write_bytes((SCRIPT.parents[1] / SBOM.RUST_LOCKFILE).read_bytes())
         vendor = self.root / "GhidraLaunchGhidraHelperC/vendor/miniz"
         vendor.mkdir(parents=True)
         (vendor / "miniz.c").write_bytes(b"fixture")
@@ -74,6 +71,15 @@ class ReleaseSbomTests(unittest.TestCase):
                 "dependsOn": [f"ghidralaunch:{child}" for child in children],
             }, cdx["dependencies"])
         self.assertTrue(any(p["name"] == "ghidra_launch_helper" for p in spdx["packages"]))
+        # One workspace lockfile still keeps each variant's dependencies separate.
+        names = {p["SPDXID"]: p["name"] for p in spdx["packages"]}
+        dependencies = {
+            (names.get(r["relatedSpdxElement"]), names.get(r["spdxElementId"]))
+            for r in spdx["relationships"] if r["relationshipType"] == "DEPENDENCY_OF"
+        }
+        self.assertIn(("ghidra_launch_helper", "zip"), dependencies)
+        self.assertIn(("ghidra_launch", "windows-sys"), dependencies)
+        self.assertNotIn(("ghidra_launch", "zip"), dependencies)
         self.assertEqual(
             next(c for c in cdx["components"] if c["bom-ref"] == "ghidralaunch:miniz")["licenses"],
             [{"license": {"id": "MIT"}}],

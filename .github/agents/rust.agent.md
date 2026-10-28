@@ -12,19 +12,28 @@ Prefer small, idiomatic changes over new abstractions or dependencies.
 ## Scope
 
 - `GhidraLaunchRS` and `GhidraLaunchGhidraHelperRS`, including their Cargo manifests,
-  lockfiles, build scripts, resources, and Visual Studio wrappers.
+  build scripts, resources, and Visual Studio wrappers, and the shared Cargo workspace at
+  the repository root (`Cargo.toml`, `Cargo.lock`, `.cargo\config.toml`, `deny.toml`).
 - Rust unit tests, `tests\test_rust_helper.py`, and shared native helper fixtures.
 - Coordinate shared formats and behavior with the C specialist and installer
   changes with the WiX specialist. Do not silently diverge between variants.
 
 ## Implementation rules
 
-- Respect `rust-toolchain.toml`, the Windows MSVC target, and checked-in lockfiles.
-  Build/test with `--locked`; update manifests and locks together when required.
+- Respect `rust-toolchain.toml`, the Windows MSVC target, and the single checked-in
+  workspace `Cargo.lock`. Build/test with `--locked`; update manifests and the lock
+  together when required. Profiles, lints and rustflags live at the workspace root
+  (member `[profile]` sections are ignored); output goes to the root `target\`.
+- Workspace lints include `clippy::pedantic`. Fix findings; when an exception is
+  justified, scope it to the item with `#[expect(lint, reason = "...")]`. Convert
+  sizes, lengths and status codes with `try_from`/`cast_signed`/`cast_unsigned`, not
+  unchecked `as`, and never `unwrap`/`expect`/`panic!` on input-derived values.
 - Preserve mandatory Windows resource compilation and shared version/icon inputs.
   Do not disable resources to make a host or cross-compilation check pass.
 - Use `Path`, `OsStr`, and `OsString` for native paths and arguments. Avoid lossy
-  conversion on execution paths. Keep unsafe Win32 calls narrow and justified.
+  conversion on execution paths. Keep unsafe Win32 calls narrow and justified with a
+  `// SAFETY:` comment (enforced by `clippy::undocumented_unsafe_blocks`); wrap
+  owned handles in RAII types such as `RegKey`.
 - Prefer explicit `Result` handling and actionable diagnostics. Do not turn
   registry, filesystem, or process failures into silent success-shaped defaults.
 - Preserve native Java startup, raw argument handling, CMD fallback semantics,
@@ -53,15 +62,19 @@ From the repository root, run the smallest relevant checks first, then the
 affected shared contracts:
 
 ```powershell
-foreach ($manifest in @('GhidraLaunchRS\Cargo.toml', 'GhidraLaunchGhidraHelperRS\Cargo.toml')) {
-    cargo fmt --manifest-path $manifest --check
-    if ($LASTEXITCODE -ne 0) { throw "Rust formatting failed" }
-    cargo test --manifest-path $manifest --locked
-    if ($LASTEXITCODE -ne 0) { throw "Rust tests failed" }
-    cargo clippy --manifest-path $manifest --locked -- -D warnings
-    if ($LASTEXITCODE -ne 0) { throw "Rust Clippy failed" }
-}
+cargo fmt --all --check
+if ($LASTEXITCODE -ne 0) { throw "Rust formatting failed" }
+cargo clippy --workspace --all-targets --locked -- -D warnings
+if ($LASTEXITCODE -ne 0) { throw "Rust Clippy failed" }
+cargo test --workspace --locked
+if ($LASTEXITCODE -ne 0) { throw "Rust tests failed" }
+cargo deny check
+if ($LASTEXITCODE -ne 0) { throw "cargo-deny failed" }
 ```
+
+`cargo deny check` (advisories, licenses, bans, sources per `deny.toml`) needs
+`cargo install cargo-deny --locked`. Report advisories against pinned dependencies
+instead of silently bumping them.
 
 Check each native command's exit code when composing a script; later success must
 not hide an earlier failure. Use `scripts\build.ps1 -Target Native` with the

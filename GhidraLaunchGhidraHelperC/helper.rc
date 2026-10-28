@@ -14,10 +14,11 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "GhidraLaunch"
+            VALUE "CompanyName", "rpinz"
             VALUE "FileDescription", "Ghidra Launch native C ZIP extraction helper"
             VALUE "FileVersion", GHIDRA_LAUNCH_VERSION
             VALUE "InternalName", "GhidraLaunchGhidraHelperC"
+            VALUE "LegalCopyright", "The Unlicense"
             VALUE "OriginalFilename", "GhidraLaunchGhidraHelperC.exe"
             VALUE "ProductName", "Ghidra Launch"
             VALUE "ProductVersion", GHIDRA_LAUNCH_PRODUCT_VERSION
@@ -28,3 +29,5 @@ BEGIN
         VALUE "Translation", 0x409, 1200
     END
 END
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "../Resources/helper.manifest"

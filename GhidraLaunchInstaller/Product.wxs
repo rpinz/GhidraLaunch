@@ -8,10 +8,14 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Ghidra Launch" Manufacturer="rpinz" Version="$(var.ReleaseVersion)"
            UpgradeCode="{E0958D3F-13B8-4707-9E18-D7CBC2625E71}"
-           Language="1033" InstallerVersion="301" Scope="perUser">
+           Language="1033" InstallerVersion="500" Scope="perUser">
     <SummaryInformation Manufacturer="rpinz" Description="Ghidra Launch" />
     <Icon Id="Logo.ico" SourceFile="..\Resources\Ghidra.ico" />
     <Property Id="ARPPRODUCTICON" Value="Logo.ico" />
+    <!-- single feature with no options: hide Change in Programs and Features -->
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/rpinz/GhidraLaunch" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/rpinz/GhidraLaunch" />
     <Property Id="GHIDRALAUNCHVARIANT" Value="$(var.Variant)" />
     <Property Id="GHIDRALAUNCHOWNER" Value="standalone-$(var.ReleaseVersion)-$(var.Variant)" Secure="yes" />
     <MediaTemplate EmbedCab="yes" />
@@ -92,7 +96,6 @@
     <Component Id="DesktopShortcutComponent" Guid="{50CC12AE-C922-40AA-86B8-4F3E631E92BF}" Directory="DesktopFolder">
       <Shortcut Id="LauncherComponentShortcut" Name="Ghidra Launch" Icon="Logo.ico"
                 Target="[#LauncherFile]" WorkingDirectory="INSTALLFOLDER" />
-      <RemoveFolder Id="CleanupDesktopShortcut" Directory="DesktopFolder" On="uninstall" />
       <RegistryValue Name="DesktopShortcut" Root="HKCU" Key="Software\rpinz\Ghidra Launch"
                      Type="integer" Value="1" KeyPath="yes" />
     </Component>
