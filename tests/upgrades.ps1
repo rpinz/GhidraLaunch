@@ -179,7 +179,9 @@ try {
         -d "Helper=$root\GhidraLaunchGhidraHelperC\x64\Release\bin\GhidraLaunchGhidraHelperC.exe" `
         -d "PayloadRoot=$PayloadRoot" -o "$legacyNative\LegacyNativeBundle.exe"
     if ($LASTEXITCODE -ne 0) { throw 'Failed to build same-MSI native legacy fixture' }
-    Copy-Item "$PayloadRoot\Ghidra.zip" $legacyNative
+    if (-not (Test-Path -LiteralPath "$legacyNative\Ghidra.zip")) {
+        Copy-Item "$PayloadRoot\Ghidra.zip" $legacyNative
+    }
     $last = "$legacyNative\LegacyNativeBundle.exe"
     Invoke-Bundle $last '/install'
     Set-Content -LiteralPath "$install\Ghidra\support\user.txt" -Value 'preserved'
