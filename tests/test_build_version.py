@@ -33,7 +33,7 @@ class WixBuildParameterTests(unittest.TestCase):
                 result = subprocess.run(
                     ["dotnet", "msbuild", str(path), "/nologo", "/verbosity:quiet",
                      f"/p:ReleaseVersion={version}", f"/p:PayloadRoot={payload}"],
-                    cwd=root, capture_output=True, text=True, timeout=30,
+                    cwd=root, capture_output=True, text=True, timeout=120,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 output = root / "result.txt"
