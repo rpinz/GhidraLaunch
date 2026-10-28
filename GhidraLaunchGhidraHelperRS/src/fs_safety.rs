@@ -186,6 +186,8 @@ pub(crate) fn hash_file(path: &Path) -> io::Result<String> {
 }
 
 pub(crate) fn hash_reader(reader: &mut impl Read) -> io::Result<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
@@ -195,11 +197,12 @@ pub(crate) fn hash_reader(reader: &mut impl Read) -> io::Result<String> {
         }
         hasher.update(&buffer[..length]);
     }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    let mut hash = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        hash.push(char::from(HEX[usize::from(byte >> 4)]));
+        hash.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    Ok(hash)
 }
 
 #[cfg(not(windows))]
@@ -522,6 +525,15 @@ mod tests {
     use crate::extract::extract;
     use crate::test_support::Fixture;
     use std::ffi::OsString;
+
+    #[test]
+    fn hash_reader_returns_lowercase_sha256_hex() {
+        let mut reader = &b"abc"[..];
+        assert_eq!(
+            hash_reader(&mut reader).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 
     #[test]
     fn destination_lock_excludes_competitors_and_is_released() {
