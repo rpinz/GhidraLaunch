@@ -15,7 +15,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-sha2 = "0.10.9"
+sha2 = "0.11.1"
 # Exact pin: 2.6.1 is the final 2.x release and the version reviewed against the shared
 # C/Rust extraction contract (UTF-8 flag vs. CP437 names, entry metadata the helper validates
 # itself). No rationale was recorded when it was introduced (db9ddfb); the pin keeps

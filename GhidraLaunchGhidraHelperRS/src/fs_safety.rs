@@ -195,7 +195,11 @@ pub(crate) fn hash_reader(reader: &mut impl Read) -> io::Result<String> {
         }
         hasher.update(&buffer[..length]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 #[cfg(not(windows))]
