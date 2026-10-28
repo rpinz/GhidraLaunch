@@ -42,17 +42,23 @@ try {
             Assert-ExecutableVersion $path $version -Native
         }
     } else {
+        $payloads = if ($PayloadRoot) { (Resolve-Path -LiteralPath $PayloadRoot).Path } else { $root }
+        $versions = if ($VersionsFile) { (Resolve-Path -LiteralPath $VersionsFile).Path } else { "$root/GhidraLaunchSetup/Versions.wxi" }
         if ($Target -eq 'Installer') {
             foreach ($path in $launchers) { Assert-ExecutableVersion $path $version -Native }
         } elseif ($Target -eq 'Internal') {
             foreach ($path in $helpers) { Assert-ExecutableVersion $path $version -Native }
             foreach ($variant in @('C', 'Rust')) {
-                Assert-MsiVersion "$root/GhidraLaunchInstaller/bin/$Configuration/GhidraLaunchInstaller$variant.msi" $version
+                Assert-MsiVersion "$root/GhidraLaunchInstaller/bin/$Configuration/GhidraLaunchInstaller$variant.msi" $version $variant
             }
         } else {
-            foreach ($name in @('CoreC', 'CoreRust', 'Java')) {
-                Assert-ExecutableVersion "$root/GhidraLaunchSetup/bin/$Configuration/GhidraLaunch$name.exe" $version
+            for ($i = 0; $i -lt 2; $i++) {
+                $variant = @('C', 'Rust')[$i]
+                Assert-ExecutableVersion $helpers[$i] $version -Native
+                Assert-InternalBundle "$root/GhidraLaunchSetup/bin/$Configuration/GhidraLaunchCore$variant.exe" $version Core $variant `
+                    "$root/GhidraLaunchInstaller/bin/$Configuration/GhidraLaunchInstaller$variant.msi" $helpers[$i] $payloads $versions
             }
+            Assert-InternalBundle "$root/GhidraLaunchSetup/bin/$Configuration/GhidraLaunchJava.exe" $version Java '' '' '' $payloads $versions
         }
         $projects = if ($Target -eq 'Internal') {
             @('GhidraLaunchSetup/GhidraLaunchCoreC.wixproj', 'GhidraLaunchSetup/GhidraLaunchCoreRust.wixproj', 'GhidraLaunchSetup/GhidraLaunchJava.wixproj')

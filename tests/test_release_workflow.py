@@ -14,6 +14,9 @@ BUILT_COMMIT = "a" * 40
 
 def step_script(name):
     step = WORKFLOW.read_text().split(f"      - name: {name}\n", 1)[1]
+    run = step.split("        run: ", 1)[1]
+    if not run.startswith("|\n"):
+        return run.splitlines()[0]
     lines = step.split("        run: |\n", 1)[1].splitlines()
     body = []
     for line in lines:
@@ -24,6 +27,34 @@ def step_script(name):
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_bundle_engines_are_signed_and_reattached_before_whole_bundles(self):
+        workflow = WORKFLOW.read_text()
+        for stage, whole_stage, whole_handoff, whole_step, config in (
+            ("internal", "Stage internal bundles for signing", "Hand off internal bundles",
+             "Sign internal native bundles", "INTERNAL"),
+            ("setup", "Stage setup bundle for SignPath", "Hand off setup bundle",
+             "Submit setup bundle for SignPath approval and signing", "SETUP"),
+        ):
+            names = [
+                f"Stage {stage} bundle engines for signing",
+                f"Hand off {stage} bundle engines",
+                f"Sign {stage} bundle engines",
+                f"Reattach signed {stage} bundle engines",
+                whole_stage,
+                whole_handoff,
+                whole_step,
+            ]
+            offsets = [workflow.index(f"      - name: {name}\n") for name in names]
+            self.assertEqual(offsets, sorted(offsets))
+            for name in names:
+                step = workflow.split(f"      - name: {name}\n", 1)[1].split("\n      - ", 1)[0]
+                self.assertIn("if: vars.SIGNPATH_ENABLED == 'true'", step)
+            engine_step = workflow[offsets[2]:offsets[3]]
+            self.assertIn(f"vars.SIGNPATH_{config}_ARTIFACT_CONFIGURATION_SLUG", engine_step)
+            self.assertIn(f"steps.unsigned_{stage}_engines.outputs.artifact-id", engine_step)
+            self.assertIn("-Operation Detach", step_script(names[0]))
+            self.assertIn("-Operation Reattach", step_script(names[3]))
+
     def test_publish_commands_have_explicit_repository_without_checkout(self):
         workflow = WORKFLOW.read_text()
         publish = workflow.split("\n  publish:\n", 1)[1]
@@ -210,6 +241,121 @@ function Invoke-WebRequest {
                         self.assertIn("CREATED_DRAFT", result.stdout)
                     else:
                         self.assertNotIn("CREATED_DRAFT", result.stdout)
+
+
+@unittest.skipUnless(shutil.which("pwsh"), "PowerShell is required")
+class BundleSigningTests(unittest.TestCase):
+    MOCKS = r"""
+$ErrorActionPreference = 'Stop'
+function dotnet {
+    $global:LASTEXITCODE = 0
+    $arguments = @($args | Where-Object { $_ -ne '--' })
+    if (($arguments[0..3] -join ' ') -ne 'tool run wix burn') { throw 'Unexpected tooling' }
+    $operation = $arguments[4]
+    $name = [IO.Path]::GetFileName($arguments[5])
+    Add-Content -LiteralPath 'calls.txt' -Value "$operation`:$name"
+    if ($env:TEST_MODE -eq 'tool-failure') { $global:LASTEXITCODE = 1; return }
+    $engineIndex = [Array]::IndexOf($arguments, '-engine')
+    if ($engineIndex -lt 0) { throw 'Missing engine path' }
+    $engine = $arguments[$engineIndex + 1]
+    if ($operation -eq 'detach') {
+        [IO.File]::WriteAllText($engine, "engine:$name")
+    } elseif ($operation -eq 'reattach') {
+        if ([IO.File]::ReadAllText($engine) -ne "signed:$name") { throw 'Wrong signed engine' }
+        $outputIndex = [Array]::IndexOf($arguments, '-o')
+        if ($outputIndex -lt 0) { throw 'Missing reattached output' }
+        [IO.File]::WriteAllText($arguments[$outputIndex + 1], "reattached:$name")
+    } else { throw 'Unexpected Burn command' }
+}
+function Get-AuthenticodeSignature {
+    param($LiteralPath)
+    if ($env:TEST_MODE -eq 'invalid-signature') {
+        return @{ Status = 'NotSigned'; StatusMessage = 'unsigned test engine' }
+    }
+    return @{ Status = 'Valid'; StatusMessage = '' }
+}
+& $env:TEST_SCRIPT -Operation $env:TEST_OPERATION -Stage $env:TEST_STAGE -Directory $env:TEST_DIRECTORY
+"""
+
+    def run_signing(self, root, stage, operation, mode="success"):
+        environment = {
+            **os.environ,
+            "TEST_SCRIPT": str(root / "scripts/bundle-signing.ps1"),
+            "TEST_DIRECTORY": str(root / "engines"),
+            "TEST_STAGE": stage, "TEST_OPERATION": operation, "TEST_MODE": mode,
+        }
+        return subprocess.run(
+            ["pwsh", "-NoProfile", "-NonInteractive", "-Command", self.MOCKS],
+            cwd=root, env=environment, capture_output=True, text=True, timeout=30,
+        )
+
+    def prepare(self, root, stage, signed=False):
+        scripts = root / "scripts"
+        scripts.mkdir()
+        shutil.copyfile(ROOT / "scripts/bundle-signing.ps1", scripts / "bundle-signing.ps1")
+        names = (
+            ("GhidraLaunchCoreC.exe", "GhidraLaunchCoreRust.exe", "GhidraLaunchJava.exe")
+            if stage == "Internal" else ("GhidraLaunchSetupC.exe", "GhidraLaunchSetupRust.exe")
+        )
+        bundles = root / "GhidraLaunchSetup/bin/Release"
+        bundles.mkdir(parents=True)
+        for name in names:
+            (bundles / name).write_text(f"original:{name}")
+            if signed:
+                engine = root / "engines/payload" / name
+                engine.parent.mkdir(parents=True, exist_ok=True)
+                engine.write_text(f"signed:{name}")
+        return names, bundles
+
+    def test_detaches_and_reattaches_each_stages_signed_engines(self):
+        for stage in ("Internal", "Setup"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                names, bundles = self.prepare(root, stage)
+                result = self.run_signing(root, stage, "Detach")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for name in names:
+                    engine = root / "engines" / name
+                    self.assertEqual(engine.read_text(), f"engine:{name}")
+                    engine.write_text(f"signed:{name}")
+                    nested = root / "engines/payload" / name
+                    nested.parent.mkdir(exist_ok=True)
+                    engine.rename(nested)
+                result = self.run_signing(root, stage, "Reattach")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for name in names:
+                    self.assertEqual((bundles / name).read_text(), f"reattached:{name}")
+                self.assertEqual(list((root / "engines").glob("*.reattached")), [])
+
+    def test_invalid_missing_duplicate_or_failed_engines_do_not_replace_bundles(self):
+        for mode in ("invalid-signature", "missing-engine", "duplicate-engine", "tool-failure"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                names, bundles = self.prepare(root, "Setup", signed=True)
+                first = root / "engines/payload" / names[0]
+                if mode == "missing-engine":
+                    first.unlink()
+                elif mode == "duplicate-engine":
+                    shutil.copyfile(first, root / "engines" / names[0])
+                result = self.run_signing(root, "Setup", "Reattach", mode)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                expected_error = (
+                    "Invalid engine signature" if mode == "invalid-signature"
+                    else "Burn engine reattachment failed" if mode == "tool-failure"
+                    else "Expected one signed engine"
+                )
+                self.assertIn(expected_error, result.stderr)
+                for name in names:
+                    self.assertEqual((bundles / name).read_text(), f"original:{name}")
+                self.assertEqual(list((root / "engines").glob("*.reattached")), [])
+
+    def test_detach_tool_failure_aborts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.prepare(root, "Setup")
+            result = self.run_signing(root, "Setup", "Detach", "tool-failure")
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Burn engine extraction failed", result.stderr)
 
 
 if __name__ == "__main__":

@@ -30,13 +30,27 @@
     <ProjectReference Include="..\GhidraLaunchGhidraHelperRS\GhidraLaunchGhidraHelperRS.vcxproj" Condition="'$(Stage)' == 'Core' and '$(Variant)' == 'Rust'" SetPlatform="Platform=x64" />
   </ItemGroup>
   <Target Name="SetLegacyMigrationCacheId" BeforeTargets="TrackWixBuildParameters;CoreCompile"
-          Condition="'$(Stage)' == 'Core'">
+          Condition="'$(Stage)' == 'Setup'">
     <!-- The same signed helper serves two packages; their cache folders must differ. -->
     <GetFileHash Files="$(HelperPath)" Algorithm="SHA256">
       <Output TaskParameter="Items" ItemName="_LegacyMigrationHelper" />
     </GetFileHash>
     <PropertyGroup>
       <DefineConstants>$(DefineConstants);LegacyMigrationCacheId=GhidraLaunchLegacy$(Variant)-@(_LegacyMigrationHelper->'%(FileHash)')</DefineConstants>
+    </PropertyGroup>
+  </Target>
+  <Target Name="SetCoreProviderKey" BeforeTargets="TrackWixBuildParameters;CoreCompile"
+          Condition="'$(Stage)' == 'Setup'">
+    <!-- Resolve from the already-built, possibly signed Core. Extraction is
+         read-only; do not rebuild or stamp that prerequisite. This also works
+         for ordinary solution builds after project references have built. -->
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; { $ErrorActionPreference = 'Stop'; . '$(SourceRoot)scripts\build-version.ps1'; Get-BundleProviderKey '$(CorePath)' }&quot;"
+          ConsoleToMSBuild="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" ItemName="_CoreProviderKey" />
+    </Exec>
+    <Error Condition="'@(_CoreProviderKey)' == ''" Text="Could not read the built Core provider key." />
+    <PropertyGroup>
+      <DefineConstants>$(DefineConstants);CoreProviderKey=@(_CoreProviderKey)</DefineConstants>
     </PropertyGroup>
   </Target>
 </Project>

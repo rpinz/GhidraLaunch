@@ -1,11 +1,13 @@
 param(
     [Parameter(Mandatory)][string]$BundlePath,
     [Parameter(Mandatory)][ValidateSet('C', 'Rust')][string]$Variant,
-    [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release'
+    [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release',
+    [string]$ExpectedNativeVersion
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
+. "$root/scripts/build-version.ps1"
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 
 # Burn shows a package's DisplayName as the current step on the progress page;
@@ -48,15 +50,22 @@ try {
         $coreRelations[0].Action -ne 'Upgrade') {
         throw 'Setup must detect only the Ghidra-specific Core upgrade family'
     }
-    if ($outerPackages[1].RollbackBoundaryForward -ne 'PayloadCommitted') {
-        throw 'Java failure must retain the committed Ghidra installation for retry'
+    $migration = @($outer.SelectNodes('//b:Chain/b:ExePackage', $outerNs) | Where-Object Id -eq "LegacyGhidra$Variant")
+    $outerChain = @($outer.SelectSingleNode('//b:Chain', $outerNs).ChildNodes |
+        Where-Object { $_.LocalName -in @('BundlePackage', 'ExePackage') })
+    if ($outerChain.Count -ne 3 -or $outerChain[0].Id -ne "Core$Variant" -or
+        $outerChain[1].Id -ne "LegacyGhidra$Variant" -or $outerChain[2].Id -ne 'Java' -or
+        $migration.Count -ne 1 -or $migration[0].RollbackBoundaryForward -ne 'PayloadCommitted' -or
+        $outerPackages[0].RollbackBoundaryBackward -ne 'WixDefaultBoundary') {
+        throw 'Migration/Java failure must not roll back the completed Core'
     }
     Assert-DisplayNames $ba @{
         "Core$Variant" = 'Ghidra Launch and Ghidra files'
+        "LegacyGhidra$Variant" = 'Finishing legacy Ghidra migration'
         'Java'         = 'Java runtime (Eclipse Temurin)'
     } 'Setup'
     $outerEmbedded = @(Get-ChildItem -LiteralPath $contents -Recurse -File)
-    if ($outerEmbedded.Count -ne 2) { throw 'Setup must embed only its native core and Java bundles' }
+    if ($outerEmbedded.Count -ne 3) { throw 'Setup must embed Core, migration helper and Java' }
     $coreName = "GhidraLaunchCore$Variant.exe"
     $core = @($outerEmbedded | Where-Object Name -eq $coreName)
     $java = @($outerEmbedded | Where-Object Name -eq 'GhidraLaunchJava.exe')
@@ -89,9 +98,13 @@ try {
     } else {
         "$root/GhidraLaunchGhidraHelperRS/bin/$Configuration/$helperName"
     }
+    $nativeVersion = Get-BuildVersion $(if ($ExpectedNativeVersion) { $ExpectedNativeVersion } else { (Get-Item -LiteralPath $helper).VersionInfo.FileVersion })
+    $migrationFile = @($outerEmbedded | Where-Object Name -eq "GhidraLaunchLegacyMigration$Variant.exe")
+    if ($migrationFile.Count -ne 1) { throw 'Setup is missing its migration helper' }
+    Assert-SameArtifact $migrationFile[0].FullName $helper
+    Assert-ExecutableVersion $migrationFile[0].FullName $nativeVersion -Native
     $expected = @{
         $helperName = $helper
-        "GhidraLaunchLegacyMigration$Variant.exe" = $helper
         "GhidraLaunchInstaller$Variant.msi" = "$root/GhidraLaunchInstaller/bin/$Configuration/GhidraLaunchInstaller$Variant.msi"
     }
     foreach ($name in $expected.Keys) {
@@ -101,7 +114,11 @@ try {
         }
     }
     $embedded = @(Get-ChildItem -LiteralPath $contents -Recurse -File)
-    if ($embedded.Count -ne 3) { throw 'Core must embed only its MSI and two uses of the same signed native helper' }
+    if ($embedded.Count -ne 2) { throw 'Core must embed only its MSI and extraction helper' }
+    $packagedMsi = @($embedded | Where-Object Name -eq "GhidraLaunchInstaller$Variant.msi")
+    $packagedHelper = @($embedded | Where-Object Name -eq $helperName)
+    Assert-MsiVersion $packagedMsi[0].FullName $nativeVersion $Variant
+    Assert-ExecutableVersion $packagedHelper[0].FullName $nativeVersion -Native
     $manifest = [xml](Get-Content -LiteralPath (Join-Path $ba 'manifest.xml') -Raw)
     Assert-BundleCondition $manifest 'Core'
     $ns = [Xml.XmlNamespaceManager]::new($manifest.NameTable)
@@ -117,32 +134,40 @@ try {
         $exe[0].DetectCondition -notmatch 'GhidraPayloadOwner') {
         throw 'Built bundle does not use matching ownership-aware helper commands and detection'
     }
-    $migration = @($manifest.SelectNodes('//b:Chain/b:ExePackage', $ns) | Where-Object Id -eq "LegacyGhidra$Variant")
     $version = $manifest.SelectSingleNode('/b:BurnManifest/b:Registration', $ns).Version
-    $migrationArguments = 'migrate-legacy "[LocalAppDataFolder]Ghidra Launch\Ghidra" "[WixBundleProviderKey]" "' + $version + '"'
+    $coreOwner = $manifest.SelectSingleNode('/b:BurnManifest/b:Registration', $ns).ProviderKey
+    $migrationArguments = 'migrate-legacy "[LocalAppDataFolder]Ghidra Launch\Ghidra" "' + $coreOwner + '" "' + $version + '"'
     if ($migration.Count -ne 1 -or $migration[0].Permanent -ne 'yes' -or
-        $migration[0].PerMachine -ne 'no' -or $migration[0].DetectCondition -ne '0' -or
+        $migration[0].Vital -ne 'yes' -or $migration[0].PerMachine -ne 'no' -or $migration[0].DetectCondition -ne '0' -or
         $migration[0].InstallArguments -ne $migrationArguments) {
-        throw 'Core must finish identity-filtered legacy migration using the protected incoming payload'
+        throw 'Setup must migrate legacy installations using its exact committed Core owner'
     }
     if ($migration[0].CacheId -ne "GhidraLaunchLegacy$Variant-$((Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash)") {
         throw 'Migration must use a separate cache identity derived from the exact signed helper bytes'
     }
     $chain = @($manifest.SelectSingleNode('//b:Chain', $ns).ChildNodes | Where-Object NodeType -eq Element)
     $packages = @($chain | Where-Object { $_.LocalName -in @('MsiPackage', 'ExePackage') })
-    if ($packages.Count -ne 3 -or $packages[0].Id -ne "Launcher$Variant" -or
-        $packages[1].Id -ne "Ghidra$Variant" -or $packages[2].Id -ne "LegacyGhidra$Variant") {
-        throw 'Core must install the launcher and protect the payload before legacy Ghidra migration'
+    if ($packages.Count -ne 2 -or $packages[0].Id -ne "Launcher$Variant" -or
+        $packages[1].Id -ne "Ghidra$Variant") {
+        throw 'Core must commit launcher and payload without legacy cleanup inside its rollback boundary'
     }
     Assert-DisplayNames $coreBa @{
         "Launcher$Variant" = 'Ghidra Launch launcher'
         "Ghidra$Variant"   = 'Ghidra files'
-        "LegacyGhidra$Variant" = 'Finishing legacy Ghidra migration'
     } 'Core'
     foreach ($name in @('Ghidra.zip', 'OpenJDK*U-jdk_x64.msi')) {
         $payloads = @($outer.SelectNodes('//b:Payload', $outerNs) | Where-Object { (Split-Path $_.FilePath -Leaf) -like $name })
         if ($payloads.Count -ne 1 -or $payloads[0].Packaging -ne 'external' -or -not $payloads[0].DownloadUrl) {
             throw "Bundle lost external download metadata for $name"
+        }
+        $nested = if ($name -eq 'Ghidra.zip') { $manifest } else { $javaManifest }
+        $nestedPayloads = @($nested.SelectNodes('/*/*[local-name()="Payload"]') |
+            Where-Object { (Split-Path $_.FilePath -Leaf) -like $name })
+        if ($nestedPayloads.Count -ne 1 -or $nestedPayloads[0].Hash -ne $payloads[0].Hash -or
+            $nestedPayloads[0].FileSize -ne $payloads[0].FileSize -or
+            $nestedPayloads[0].DownloadUrl -cne $payloads[0].DownloadUrl -or
+            $nestedPayloads[0].FilePath -ne $payloads[0].FilePath) {
+            throw "Setup and its nested bundle disagree on external payload $name"
         }
     }
     Write-Host "$Variant bundle payload checks passed."

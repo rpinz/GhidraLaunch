@@ -34,16 +34,17 @@ approval. Neither native helper requires .NET or an external ZIP extraction
 tool on the installing machine.
 Temurin is a shared prerequisite and is retained when uninstalling or switching
 native variants; remove it separately through Windows Installed apps if needed.
-Setup first installs the native core and completes any matching legacy Ghidra bundle removal,
-then runs a separate native Java stage with fresh detection. This prevents old
-cached uninstallers from removing Java after setup has checked it. The core is
-committed before the Java stage: if Java installation fails, setup reports the
-error and retains Ghidra and the launcher; rerun setup to retry Java. The setup
+Setup first commits the launcher and Ghidra Core, then performs identity-filtered
+legacy cleanup before a separate native Java stage with fresh detection. This
+prevents old cached uninstallers from removing Java after setup has checked it.
+If cleanup or Java installation fails, setup reports the error and retains
+Ghidra and the launcher; rerun setup to retry. The setup
 and its embedded stages are WiX native bootstrapper applications, not managed
 helpers or an external extraction dependency.
 
 While setup runs, its progress page names the step in progress — acquiring and
-installing "Ghidra Launch and Ghidra files", then "Java runtime (Eclipse
+installing "Ghidra Launch and Ghidra files", "Finishing legacy Ghidra migration",
+then "Java runtime (Eclipse
 Temurin)". Running an MSI directly reports its own steps ("Copying new files",
 "Creating shortcuts", "Removing the previous version", and so on) rather than
 listing individual files.
@@ -174,11 +175,13 @@ on the runner. Cleanup failures do not replace the original test error.
 The synthetic upstream MSI is machine-wide, like Temurin, and upgrade checks
 verify it survives bundle replacement. WiX warns that per-user bundles cannot
 register dependencies on machine-wide packages, so native bundles deliberately
-mark Temurin permanent. Legacy cleanup completes in the core stage before the
-Java stage performs its own fresh detection/install.
+mark Temurin permanent. Legacy cleanup completes in Setup after Core commits and
+before the Java stage performs its own fresh detection/install.
 
-The Core chain installs the launcher and extracts/adopts its payload before
-running identity-filtered legacy cleanup. During each cached legacy uninstaller,
+The Core chain installs the launcher and extracts/adopts its payload. Setup
+commits that Core across a rollback boundary before running identity-filtered
+legacy cleanup with the built Core's provider key. A failed cleanup cannot
+roll back the committed Core. During each cached legacy uninstaller,
 the native helper temporarily relocates the incoming Ghidra tree and restores it
 afterwards, so older helpers cannot delete it. Installer regression fixtures
 include a higher-version unrelated bundle sharing the ambiguous legacy family.
@@ -211,8 +214,8 @@ success so Burn does not roll back an already committed launcher installation.
 Unsafe Windows archive paths and
 links are rejected. Both helpers decode UTF-8-flagged and legacy CP437 ZIP names.
 
-Standalone extraction uses the legacy plain-hash marker. Setup supplies an
-owner token (its unique Burn provider key), recorded as a second
+Standalone extraction uses the legacy plain-hash marker. The native Core supplies
+an owner token (its unique Burn provider key), recorded as a second
 `owner=...` line. Adopting an unchanged ZIP updates ownership without replacing
 existing contents; legacy installations without an inventory first derive one
 from the validated source archive. Owner-aware removal requires matching ownership and source hash; calls
@@ -289,13 +292,18 @@ arbitrary certificate identity. A valid bundle proves the file was signed by
 the specified workflow identity, not that Windows trusts its publisher. This
 is separate from Authenticode.
 
-When SignPath is enabled, the workflow submits four artifacts (the launcher
-and helper executables, both MSIs, the three internal native bundles, and both
-public setup EXEs) for SignPath review and waits for
-approval of each request. It enforces Ghidra Launch product-name/version
+When SignPath is enabled, the workflow submits six artifacts (the launcher
+and helper executables, both MSIs, internal bundle engines, complete internal
+bundles, public setup engines, and complete public setups) for SignPath review
+and waits for approval of each request. It enforces Ghidra Launch product-name/version
 metadata on the PE files, signs the launchers before packaging, verifies those
 signatures in the MSI, then signs internal bundles before embedding them into
-the final signed setup EXEs. Ghidra and Temurin are
+the final signed setup EXEs. Each bundle's Burn engine is detached, signed,
+and reattached before the complete bundle is signed, so cached repair,
+uninstall, and elevated engines retain their signatures. The engine requests
+reuse the corresponding internal/setup artifact configurations and filenames.
+Bundle signing requests each allow 30 minutes for approval; the executable and
+MSI requests each allow 60 minutes. Ghidra and Temurin are
 upstream software and are never signed with this project's subscription.
 After enrollment, verify Windows signatures in PowerShell:
 

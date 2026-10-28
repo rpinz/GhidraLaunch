@@ -373,9 +373,17 @@ int APIENTRY wWinMain(
     ShowError(L"GHIDRA_HOME path is too long, error", ERROR_FILENAME_EXCED_RANGE);
     return EXIT_FAILURE;
   }
-  if (dwLength != 0 && wcscpy_s(wDirectory, _countof(wDirectory), wGhidraDirectory) != 0) {
-    ShowError(L"Unable to use GHIDRA_HOME, error", ERROR_FILENAME_EXCED_RANGE);
-    return EXIT_FAILURE;
+  if (dwLength != 0) {
+    // Child processes run inside Ghidra, so their paths must not remain relative.
+    dwLength = GetFullPathNameW(wGhidraDirectory, _countof(wDirectory), wDirectory, NULL);
+    if (dwLength == 0) {
+      ShowError(L"Unable to resolve GHIDRA_HOME, error", GetLastError());
+      return EXIT_FAILURE;
+    }
+    if (dwLength >= _countof(wDirectory)) {
+      ShowError(L"Resolved GHIDRA_HOME path is too long, error", ERROR_FILENAME_EXCED_RANGE);
+      return EXIT_FAILURE;
+    }
   }
 
   // start Ghidra directly; fall back to ghidraRun.bat when that is not possible

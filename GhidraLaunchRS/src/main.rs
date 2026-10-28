@@ -293,6 +293,12 @@ fn launch() -> i32 {
             )
         }
     };
+    // Resolve GHIDRA_HOME before using it both in Java arguments and as the
+    // child's working directory; otherwise relative classpaths are doubled.
+    let directory = match std::path::absolute(&directory) {
+        Ok(directory) => directory,
+        Err(error) => return fail("Unable to resolve the Ghidra directory, error", error),
+    };
 
     // start Ghidra directly; fall back to ghidraRun.bat when that is not possible
     let mut jdk_error = false;

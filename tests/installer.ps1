@@ -1,10 +1,12 @@
 param(
     [Parameter(Mandatory)][string]$MsiPath,
     [Parameter(Mandatory)][ValidateSet('C', 'Rust')][string]$Variant,
-    [string]$ExpectedVersion
+    [string]$ExpectedVersion,
+    [string]$ExpectedNativeVersion
 )
 
 $ErrorActionPreference = 'Stop'
+. "$(Split-Path $PSScriptRoot -Parent)/scripts/build-version.ps1"
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $resolvedMsiPath = (Resolve-Path -LiteralPath $MsiPath).Path
 $database = $installer.OpenDatabase($resolvedMsiPath, 0)
@@ -37,6 +39,10 @@ if ($properties['ProductName'] -ne 'Ghidra Launch' -or $properties['GHIDRALAUNCH
 if ($ExpectedVersion -and $properties['ProductVersion'] -ne $ExpectedVersion) {
     throw "MSI ProductVersion '$($properties['ProductVersion'])' does not match '$ExpectedVersion'"
 }
+$fileVersion = @(Read-Rows 'SELECT `Version` FROM `File` WHERE `File` = ''LauncherFile''' 1)
+if ($fileVersion.Count -ne 1) { throw 'MSI must contain a versioned launcher' }
+$nativeVersion = Get-BuildVersion $(if ($ExpectedNativeVersion) { $ExpectedNativeVersion } else { $fileVersion[0].Column1 })
+Assert-MsiVersion $resolvedMsiPath $nativeVersion $Variant
 if ($properties['UpgradeCode'] -ne '{E0958D3F-13B8-4707-9E18-D7CBC2625E71}') {
     throw 'MSI lost the legacy upgrade family'
 }

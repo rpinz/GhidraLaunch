@@ -53,6 +53,7 @@ struct Inventory {
 struct CentralEntry {
     attributes: u32,
     flags: u16,
+    name: Vec<u8>,
 }
 
 struct DestinationLock {
@@ -2049,19 +2050,20 @@ fn validate_archive<R: Read + io::Seek>(
         let file = zip
             .by_index(index)
             .map_err(|error| format!("cannot inspect zip entry {index}: {error}"))?;
+        // zip may replace name_raw() with a Unicode-path extra-field override.
+        // Match C by decoding the original central name with its original flags.
+        let raw_name = decode_zip_name(&central.name, central.flags)?;
         let unix_type = file.unix_mode().unwrap_or(0) & 0o170000;
         if file.is_symlink()
             || central.attributes & 0x0400 != 0
             || (unix_type != 0 && !matches!(unix_type, 0o100000 | 0o040000))
         {
             return Err(format!(
-                "archive contains a symbolic link, special file, or reparse point: {}",
-                file.name()
+                "archive contains a symbolic link, special file, or reparse point: {raw_name}"
             ));
         }
-        let raw_name = decode_zip_name(file.name_raw(), central.flags)?;
-        let is_dir = file.is_dir()
-            || raw_name.ends_with('\\')
+        let is_dir = raw_name.ends_with(['/', '\\'])
+            || central.attributes & 0x10 != 0
             || file
                 .unix_mode()
                 .is_some_and(|mode| mode & 0o170000 == 0o040000);
@@ -2651,12 +2653,15 @@ fn read_central_directory_attributes(path: &Path) -> io::Result<Vec<CentralEntry
         let name_length = read_u16_le(&header[28..]).unwrap() as u64;
         let extra_length = read_u16_le(&header[30..]).unwrap() as u64;
         let comment_length = read_u16_le(&header[32..]).unwrap() as u64;
+        let mut name = vec![0; name_length as usize];
+        file.read_exact(&mut name)?;
         attributes.push(CentralEntry {
             attributes: read_u32_le(&header[38..]).unwrap(),
             flags: read_u16_le(&header[8..]).unwrap(),
+            name,
         });
         file.seek(SeekFrom::Current(
-            i64::try_from(name_length + extra_length + comment_length).map_err(|_| {
+            i64::try_from(extra_length + comment_length).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     "ZIP entry metadata is too large",
@@ -2707,8 +2712,12 @@ fn is_reparse_point(path: &Path) -> io::Result<bool> {
 fn to_wide_verbatim(path: &Path) -> io::Result<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
 
-    let text = path.as_os_str().to_string_lossy();
-    if text.starts_with(r"\\?\") || text.starts_with(r"\\.\") {
+    if matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix))
+            if prefix.kind().is_verbatim()
+                || matches!(prefix.kind(), std::path::Prefix::DeviceNS(_))
+    ) {
         return Ok(path.as_os_str().encode_wide().chain(Some(0)).collect());
     }
 
@@ -2729,12 +2738,27 @@ fn to_wide_verbatim(path: &Path) -> io::Result<Vec<u16>> {
         }
     }
 
-    let text = normalized.to_string_lossy().replace('/', "\\");
-    let prefixed = match text.strip_prefix(r"\\") {
-        Some(rest) => format!(r"\\?\UNC\{rest}"),
-        None => format!(r"\\?\{text}"),
+    let units: Vec<_> = normalized
+        .as_os_str()
+        .encode_wide()
+        .map(|unit| {
+            if unit == b'/' as u16 {
+                b'\\' as u16
+            } else {
+                unit
+            }
+        })
+        .collect();
+    let (prefix, rest) = if units.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+        (r"\\?\UNC\", &units[2..])
+    } else {
+        (r"\\?\", units.as_slice())
     };
-    Ok(OsStr::new(&prefixed).encode_wide().chain(Some(0)).collect())
+    Ok(prefix
+        .encode_utf16()
+        .chain(rest.iter().copied())
+        .chain(Some(0))
+        .collect())
 }
 
 #[cfg(test)]
@@ -4073,6 +4097,37 @@ mod tests {
         assert!(extract(&fixture.first, &fixture.dest, None).is_err());
         drop(lock);
         extract(&fixture.first, &fixture.dest, None).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_paths_preserve_unpaired_utf16_units() {
+        use std::os::windows::ffi::OsStringExt;
+
+        for (input, expected) in [
+            (r"C:\native-", r"\\?\C:\native-"),
+            (r"\\server\share\native-", r"\\?\UNC\server\share\native-"),
+            (r"\\?\C:\native-", r"\\?\C:\native-"),
+            (r"\\.\C:\native-", r"\\.\C:\native-"),
+        ] {
+            for surrogate in [0xd800, 0xdc00] {
+                let input: Vec<_> = input
+                    .encode_utf16()
+                    .chain([surrogate])
+                    .chain(r"\child".encode_utf16())
+                    .collect();
+                let expected: Vec<_> = expected
+                    .encode_utf16()
+                    .chain([surrogate])
+                    .chain(r"\child".encode_utf16())
+                    .chain([0])
+                    .collect();
+                assert_eq!(
+                    to_wide_verbatim(Path::new(&OsString::from_wide(&input))).unwrap(),
+                    expected
+                );
+            }
+        }
     }
 
     #[cfg(windows)]

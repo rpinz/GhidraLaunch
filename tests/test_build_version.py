@@ -112,6 +112,107 @@ ConvertTo-Json -InputObject $rejected
 """)
         self.assertEqual(data, ["0.0.0/0.0.0.0", "1.2.3/1.2.3.1"])
 
+    def test_msi_gate_checks_packaged_native_revision_and_variant(self):
+        data = self.powershell(r"""
+$script:fileVersion = '1.2.3.4'
+$script:variant = 'C'
+$script:inspections = 0
+function Get-MsiProperties {
+    param($Path)
+    @{ ProductName = 'Ghidra Launch'; ProductVersion = '1.2.3'; GHIDRALAUNCHVARIANT = $script:variant }
+}
+function Invoke-WithMsiContents {
+    param($Path, $Action)
+    $script:inspections++
+    & $Action 'packaged'
+}
+function Get-Item {
+    param($LiteralPath)
+    [pscustomobject]@{ VersionInfo = [pscustomobject]@{
+        ProductName = 'Ghidra Launch'; ProductVersion = '1.2.3'; FileVersion = $script:fileVersion
+    } }
+}
+$version = Get-BuildVersion '1.2.3.4'
+Assert-MsiVersion 'fixture.msi' $version C
+$rejected = @()
+$script:fileVersion = '1.2.3.3'
+try { Assert-MsiVersion 'fixture.msi' $version C } catch { $rejected += 'revision' }
+$script:fileVersion = '1.2.3.4'
+$script:variant = 'Rust'
+try { Assert-MsiVersion 'fixture.msi' $version C } catch { $rejected += 'variant' }
+@{ rejected = $rejected; inspections = $script:inspections } | ConvertTo-Json
+""")
+        self.assertEqual(data, {"rejected": ["revision", "variant"], "inspections": 2})
+
+    def test_core_gate_checks_packaged_revisions_artifacts_and_upstream_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = self.powershell(r"""
+$root = '""" + str(Path(directory)).replace("'", "''") + r"""'
+$null = New-Item -ItemType Directory -Path "$root/embedded"
+Set-Content "$root/embedded/GhidraLaunchInstallerC.msi" 'msi'
+Set-Content "$root/embedded/GhidraLaunchGhidraHelperC.exe" 'helper'
+Copy-Item "$root/embedded/GhidraLaunchInstallerC.msi" "$root/expected.msi"
+Copy-Item "$root/embedded/GhidraLaunchGhidraHelperC.exe" "$root/expected.exe"
+Set-Content "$root/Ghidra.zip" 'verified upstream'
+$hash = (Get-FileHash "$root/Ghidra.zip" -Algorithm SHA512).Hash
+$size = (Get-Item "$root/Ghidra.zip").Length
+$script:manifest = [xml]('<BurnManifest><Registration Version="1.2.3" Tag="C"/><Payload FilePath="Ghidra.zip" Packaging="external" DownloadUrl="https://example.invalid/Ghidra.zip" FileSize="' + $size + '" Hash="' + $hash + '"/></BurnManifest>')
+$script:oldMsi = $false
+$script:oldHelper = $false
+function Invoke-WithBundleContents {
+    param($Path, $Action)
+    & $Action $script:manifest "$root/embedded"
+}
+function Get-UpstreamBuildMetadata {
+    param($VersionsFile)
+    @{ GhidraDownloadUrl = 'https://example.invalid/Ghidra.zip' }
+}
+function Assert-MsiVersion {
+    param($Path, $Version, $Variant)
+    if ($script:oldMsi) { throw 'Packaged launcher has an old fourth revision' }
+}
+function Assert-ExecutableVersion {
+    param($Path, $Version, [switch]$Native)
+    if ($Native -and $script:oldHelper) { throw 'Packaged helper has an old fourth revision' }
+}
+function Check-Core {
+    Assert-InternalBundle 'core.exe' (Get-BuildVersion '1.2.3.4') Core C "$root/expected.msi" "$root/expected.exe" $root 'Versions.wxi'
+}
+Check-Core
+$rejected = @()
+$script:oldMsi = $true
+try { Check-Core } catch { $rejected += 'launcher' }
+$script:oldMsi = $false
+$script:oldHelper = $true
+try { Check-Core } catch { $rejected += 'helper' }
+$script:oldHelper = $false
+Set-Content "$root/expected.msi" 'different signed MSI'
+try { Check-Core } catch { $rejected += 'artifact' }
+Copy-Item "$root/embedded/GhidraLaunchInstallerC.msi" "$root/expected.msi" -Force
+$script:manifest.BurnManifest.Payload.DownloadUrl = 'https://example.invalid/stale.zip'
+try { Check-Core } catch { $rejected += 'url' }
+$script:manifest.BurnManifest.Payload.DownloadUrl = 'https://example.invalid/Ghidra.zip'
+Set-Content "$root/Ghidra.zip" 'changed upstream'
+try { Check-Core } catch { $rejected += 'payload' }
+ConvertTo-Json -InputObject $rejected
+""")
+            self.assertEqual(data, ["launcher", "helper", "artifact", "url", "payload"])
+
+    def test_migration_is_after_completed_core_in_parent_rollback_boundary(self):
+        root = SCRIPT.parents[1]
+        text = (root / "GhidraLaunchSetup/Bundle.wxs").read_text()
+        setup = text.split("<?if $(var.Stage) = Setup ?>", 1)[1].split("<?elseif", 1)[0]
+        core = text.split("<?elseif $(var.Stage) = Core ?>", 1)[1].split("<?else?>", 1)[0]
+        self.assertLess(setup.index('Id="Core$(var.Variant)"'), setup.index('Id="PayloadCommitted"'))
+        self.assertLess(setup.index('Id="PayloadCommitted"'), setup.index('Id="LegacyGhidra$(var.Variant)"'))
+        self.assertLess(setup.index('Id="LegacyGhidra$(var.Variant)"'), setup.index('Id="Java"'))
+        self.assertIn('"$(var.CoreProviderKey)" "$(var.ReleaseVersion)"', setup)
+        self.assertIn('Permanent="yes" Vital="yes"', setup)
+        self.assertNotIn('migrate-legacy', core)
+        lifecycle = (root / "tests/upgrades.ps1").read_text()
+        self.assertIn("-FailUninstall", lifecycle)
+        self.assertIn("Migration failure rolled back the committed incoming installation", lifecycle)
+
     def test_upgrade_cleanup_preserves_original_error_logs_and_native_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             data = self.powershell(r"""

@@ -17,6 +17,7 @@ import unittest
 import uuid
 import zipfile
 import xml.etree.ElementTree as ET
+import zlib
 
 
 EXE = os.environ.get("RUST_HELPER_EXE")
@@ -204,6 +205,73 @@ class RustHelperTests(unittest.TestCase):
 
     def marker(self):
         return (self.dest / MARKER).read_bytes()
+
+    def unicode_path_archive(self, raw_name, unicode_name, flags):
+        placeholder = "x" * len(raw_name)
+        info = zipfile.ZipInfo(placeholder)
+        unicode_path = (
+            struct.pack("<BI", 1, zlib.crc32(raw_name))
+            + unicode_name.encode("utf-8")
+        )
+        info.extra = struct.pack("<HH", 0x7075, len(unicode_path)) + unicode_path
+        with zipfile.ZipFile(self.zip, "w") as archive:
+            archive.writestr(info, b"payload")
+        raw = bytearray(self.zip.read_bytes())
+        for signature, name_offset, flag_offset in (
+            (b"PK\x03\x04", 30, 6), (b"PK\x01\x02", 46, 8)
+        ):
+            start = raw.index(signature)
+            raw[start + name_offset:start + name_offset + len(raw_name)] = raw_name
+            struct.pack_into("<H", raw, start + flag_offset, flags)
+        self.zip.write_bytes(raw)
+
+    def test_unicode_path_extra_field_keeps_original_name_and_flags(self):
+        # Match C: Unicode overrides must not replace the original central name
+        # or change whether its bytes are interpreted as UTF-8 or legacy CP437.
+        cases = (
+            (b"bundle/caf\x82.txt", "bundle/caf\u00e9.txt", 0, "caf\u00e9.txt"),
+            (b"bundle/\xc3\xa9.txt", "bundle/\u00e9.txt", 0, "\u251c\u2310.txt"),
+            (b"bundle/original.txt", "bundle/override.txt", 0, "original.txt"),
+            (b"bundle/caf\xc3\xa9.txt", "bundle/override.txt", 0x800, "caf\u00e9.txt"),
+            (b"bundle/file.txt", "bundle/override/", 0, "file.txt"),
+        )
+        for index, (raw_name, unicode_name, flags, expected) in enumerate(cases):
+            with self.subTest(raw_name=raw_name, unicode_name=unicode_name, flags=flags):
+                self.dest = self.root / f"extra-{index}"
+                self.unicode_path_archive(raw_name, unicode_name, flags)
+                self.run_helper("extract", self.zip, self.dest)
+                self.assertEqual((self.dest / expected).read_bytes(), b"payload")
+                inventory = (self.dest / ".ghidralaunch-inventory").read_text(encoding="utf-8")
+                self.assertIn(f"\t{expected}\n", inventory)
+                self.assertEqual(self.marker(), self.hash())
+                self.run_helper("remove", self.dest, self.zip, exe=PEER_EXE or EXE)
+                self.assertFalse(self.dest.exists())
+
+    def test_unicode_path_extra_field_cannot_override_invalid_original_name(self):
+        for index, (raw_name, flags) in enumerate((
+            (b"../unsafe", 0), (b"bundle/\x82.txt", 0x800),
+        )):
+            with self.subTest(raw_name=raw_name, flags=flags):
+                self.dest = self.root / f"invalid-extra-{index}"
+                self.unicode_path_archive(raw_name, "bundle/safe.txt", flags)
+                self.run_helper("extract", self.zip, self.dest, code=1)
+                self.assertFalse(self.dest.exists())
+                self.assertFalse((self.root / "unsafe").exists())
+
+    @unittest.skipUnless(WINDOWS, "requires native Windows UTF-16 paths")
+    def test_unpaired_surrogate_destination_parent_round_trips(self):
+        self.archive()
+        for label, surrogate in (("high", "\ud800"), ("low", "\udc00")):
+            with self.subTest(surrogate=label):
+                parent = self.root / f"parent-{label}-{surrogate}"
+                parent.mkdir()
+                self.dest = parent / "Ghidra"
+                self.run_helper("extract", self.zip, self.dest)
+                self.assertEqual((self.dest / "support/\u00e9.txt").read_bytes(), b"payload")
+                self.run_helper("remove", self.dest, self.zip)
+                self.assertFalse(self.dest.exists())
+                self.assertTrue(parent.is_dir())
+                self.assertFalse((self.root / f"parent-{label}-\ufffd").exists())
 
     def test_extract_error_codes_unicode_and_safe_rollback(self):
         self.run_helper("unknown", code=2)

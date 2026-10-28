@@ -167,6 +167,41 @@ try {
             Remove-Item -LiteralPath "$install\Ghidra" -Recurse -Force
         }
     }
+    # A clean, same-ZIP legacy tree is the dangerous adoption case: a rollback
+    # remove would delete it, not retain it as customized. Exercise the *public*
+    # Setup, so a parent rollback cannot silently undo Core preservation.
+    $failedMigration = Join-Path $scratch 'legacy-failed-migration'
+    & "$root/scripts/build.ps1" -Target Native -ReleaseVersion '1.0.0'
+    & "$PSScriptRoot/create-legacy-fixture.ps1" -Destination $failedMigration -PayloadRoot $PayloadRoot -LegacyVersion '1.0.0' -FailUninstall
+    foreach ($variant in @('C', 'Rust')) {
+        $last = "$failedMigration/LegacyBundle.exe"
+        Invoke-Bundle $last '/install'
+        $legacyMarker = (Get-Content -LiteralPath "$install/Ghidra/.ghidralaunch-source.sha256" -Raw).Trim()
+        if ($legacyMarker -ine (Get-FileHash "$PayloadRoot/Ghidra.zip").Hash) { throw 'Failure fixture must start with a plain legacy marker' }
+        Set-Content -LiteralPath "$failedMigration/fail-uninstall" -Value 'fail'
+        $last = "$scratch/1.0.0-$variant/GhidraLaunchSetup$variant.exe"
+        Invoke-Bundle $last '/install' $false
+        $launcher = if ($variant -eq 'C') { 'GhidraLaunchC.exe' } else { 'GhidraLaunchRS.exe' }
+        if (-not (Test-Path -LiteralPath "$install/$launcher") -or
+            -not (Test-Path -LiteralPath "$install/Ghidra/ghidraRun.bat")) {
+            throw 'Migration failure rolled back the committed incoming installation'
+        }
+        $owner = (Get-ItemProperty 'HKCU:\Software\rpinz\Ghidra Launch').PayloadOwner
+        $marker = Get-Content -LiteralPath "$install/Ghidra/.ghidralaunch-source.sha256" -Raw
+        if (-not $owner -or $marker -notmatch "owner=$([regex]::Escape($owner))`n") {
+            throw 'Migration failure damaged committed ownership'
+        }
+        if ([Environment]::GetEnvironmentVariable('GHIDRA_HOME', 'User') -ne "$install\Ghidra") {
+            throw 'Migration failure removed the committed environment'
+        }
+        Assert-Shortcuts $launcher
+        Remove-Item -LiteralPath "$failedMigration/fail-uninstall"
+        Invoke-Bundle $last '/install'
+        Assert-Installed $variant '1.0.0'
+        Invoke-Bundle $last '/uninstall'
+        $last = $null
+        if (Test-Path -LiteralPath "$install/Ghidra") { throw 'Migration retry/uninstall left its clean tree' }
+    }
     $packages = & dotnet nuget locals global-packages --list
     if ($LASTEXITCODE -ne 0) { throw 'Failed to locate restored WiX extension' }
     $packageRoot = ($packages -replace '^global-packages:\s*', '').Trim()
@@ -276,11 +311,10 @@ try {
         if ($injectProcess.ExitCode -ne 0) { throw "Failed to inject rollback-test custom action (exit $($injectProcess.ExitCode))" }
     } finally { $injectProcess.Dispose() }
     Wait-ForFileReady $msiPath
-    $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
-    if (-not $msbuild) { throw 'MSBuild not found for failed-MSI rollback fixture' }
+    # Keep the canonical unsigned CI prerequisite identical to the MSI embedded
+    # in Core; Setup packaging now verifies that artifact relationship.
+    Copy-Item -LiteralPath $msiPath -Destination "$root/GhidraLaunchInstaller/bin/Release/GhidraLaunchInstallerRust.msi" -Force
     & "$root/scripts/build.ps1" -Target Internal -ReleaseVersion '1.0.2' -PayloadRoot $PayloadRoot -VersionsFile "$PayloadRoot/Versions.wxi"
-    & $msbuild "$root/GhidraLaunchSetup/GhidraLaunchCoreRust.wixproj" /restore /t:Rebuild /p:Configuration=Release /p:Platform=x86 /p:ReleaseVersion=1.0.2 /p:BuildProjectReferences=false "/p:SolutionDir=$root\" "/p:PayloadRoot=$PayloadRoot" "/p:VersionsFile=$PayloadRoot/Versions.wxi" "/p:MsiPath=$msiPath"
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to build launcher-MSI failure bundle' }
     & "$root/scripts/build.ps1" -Target Setup -ReleaseVersion '1.0.2' -PayloadRoot $PayloadRoot -VersionsFile "$PayloadRoot/Versions.wxi" -Rebuild
     Copy-Item "$root/GhidraLaunchSetup/bin/Release/GhidraLaunchSetupRust.exe", "$PayloadRoot/Ghidra.zip", "$PayloadRoot/OpenJDK21U-jdk_x64.msi" $failedMsi
     $previousOwner = (Get-ItemProperty 'HKCU:\Software\rpinz\Ghidra Launch').PayloadOwner
@@ -298,7 +332,7 @@ try {
         $writer = [IO.StreamWriter]::new($archive.CreateEntry('../escape.txt').Open())
         try { $writer.Write('invalid entry') } finally { $writer.Dispose() }
     } finally { $archive.Dispose() }
-    & "$root/scripts/build.ps1" -Target Installer -ReleaseVersion '1.0.2'
+    & "$root/scripts/build.ps1" -Target Installer -ReleaseVersion '1.0.2' -Rebuild
     & "$root/scripts/build.ps1" -Target Internal -ReleaseVersion '1.0.2' -PayloadRoot $bad -VersionsFile "$bad/Versions.wxi"
     & "$root/scripts/build.ps1" -Target Setup -ReleaseVersion '1.0.2' -PayloadRoot $bad -VersionsFile "$bad/Versions.wxi"
     Copy-Item "$root/GhidraLaunchSetup/bin/Release/GhidraLaunchSetupRust.exe" $bad

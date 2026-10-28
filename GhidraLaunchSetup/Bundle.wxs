@@ -29,9 +29,20 @@
         <Payload Name="Ghidra.zip" SourceFile="$(var.PayloadRoot)\Ghidra.zip"
                  Compressed="no" DownloadUrl="$(var.GhidraDownloadUrl)" />
       </BundlePackage>
-      <!-- Legacy bundle removal finishes inside Core before Java is detected.
-           A Java failure must not roll back and delete the committed Ghidra tree. -->
+      <!-- Core has completed successfully before this boundary. In particular,
+           migration failure must not make the parent uninstall a failed Core
+           whose MSI/extraction already committed. Keep that working Core for
+           retry, just as on Java failure. -->
       <RollbackBoundary Id="PayloadCommitted" />
+      <!-- The owner is read from the exact built Core, not Setup's provider key.
+           Never automatically upgrade the ambiguous legacy bundle family. -->
+      <ExePackage Id="LegacyGhidra$(var.Variant)" DisplayName="Finishing legacy Ghidra migration"
+                  SourceFile="$(var.HelperPath)" Name="GhidraLaunchLegacyMigration$(var.Variant).exe"
+                  CacheId="$(var.LegacyMigrationCacheId)"
+                  Compressed="yes" PerMachine="no" Permanent="yes" Vital="yes"
+                  InstallArguments='migrate-legacy "[LocalAppDataFolder]Ghidra Launch\Ghidra" "$(var.CoreProviderKey)" "$(var.ReleaseVersion)"'
+                  DetectCondition="0" />
+      <!-- Fresh Java detection starts only after genuine legacy removal. -->
       <BundlePackage Id="Java" DisplayName="Java runtime (Eclipse Temurin)"
                      SourceFile="$(var.JavaPath)" Name="GhidraLaunchJava.exe"
                      Compressed="yes" Permanent="yes" Vital="yes">
@@ -73,14 +84,6 @@
                  SourceFile="$(var.PayloadRoot)\Ghidra.zip" Compressed="no"
                  DownloadUrl="$(var.GhidraDownloadUrl)" />
       </ExePackage>
-      <!-- The legacy family is shared by unrelated applications. Only the
-           native helper may select genuine Ghidra registrations for removal. -->
-      <ExePackage Id="LegacyGhidra$(var.Variant)" DisplayName="Finishing legacy Ghidra migration"
-                  SourceFile="$(var.HelperPath)" Name="GhidraLaunchLegacyMigration$(var.Variant).exe"
-                  CacheId="$(var.LegacyMigrationCacheId)"
-                  Compressed="yes" PerMachine="no" Permanent="yes" Vital="yes"
-                  InstallArguments='migrate-legacy "[LocalAppDataFolder]Ghidra Launch\Ghidra" "[WixBundleProviderKey]" "$(var.ReleaseVersion)"'
-                  DetectCondition="0" />
     </Chain>
     <util:FileSearch Id="GhidraPayloadMarker" Variable="GhidraPayloadInstalled"
                      Path="[LocalAppDataFolder]Ghidra Launch\Ghidra\.ghidralaunch-source.sha256"

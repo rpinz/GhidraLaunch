@@ -254,6 +254,42 @@ jobs:
         shell: pwsh
         run: ./scripts/build.ps1 -Target Internal -ReleaseVersion $env:RELEASE_NATIVE_VERSION
 
+      - name: Stage internal bundle engines for signing
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: ./scripts/bundle-signing.ps1 -Operation Detach -Stage Internal -Directory (Join-Path $env:RUNNER_TEMP 'signpath-internal-engines')
+
+      - name: Hand off internal bundle engines
+        if: vars.SIGNPATH_ENABLED == 'true'
+        id: unsigned_internal_engines
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signpath-internal-engines
+          path: ${{ runner.temp }}/signpath-internal-engines/
+          if-no-files-found: error
+
+      - name: Sign internal bundle engines
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: SignPath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_INTERNAL_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned_internal_engines.outputs.artifact-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: ${{ runner.temp }}/signed-internal-engines
+          parameters: |
+            version: "${{ env.RELEASE_VERSION }}"
+
+      - name: Reattach signed internal bundle engines
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: ./scripts/bundle-signing.ps1 -Operation Reattach -Stage Internal -Directory (Join-Path $env:RUNNER_TEMP 'signed-internal-engines')
+
       - name: Stage internal bundles for signing
         if: vars.SIGNPATH_ENABLED == 'true'
         shell: pwsh
@@ -283,7 +319,7 @@ jobs:
           github-artifact-id: ${{ steps.unsigned_internal.outputs.artifact-id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 3600
+          wait-for-completion-timeout-in-seconds: 1800
           output-artifact-directory: ${{ runner.temp }}/signed-internal
           parameters: |
             version: "${{ env.RELEASE_VERSION }}"
@@ -302,6 +338,42 @@ jobs:
       - name: Build setup bundles without rebuilding signed inputs
         shell: pwsh
         run: ./scripts/build.ps1 -Target Setup -ReleaseVersion $env:RELEASE_NATIVE_VERSION
+
+      - name: Stage setup bundle engines for signing
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: ./scripts/bundle-signing.ps1 -Operation Detach -Stage Setup -Directory (Join-Path $env:RUNNER_TEMP 'signpath-setup-engines')
+
+      - name: Hand off setup bundle engines
+        if: vars.SIGNPATH_ENABLED == 'true'
+        id: unsigned_setup_engines
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signpath-setup-engines
+          path: ${{ runner.temp }}/signpath-setup-engines/
+          if-no-files-found: error
+
+      - name: Sign setup bundle engines
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: SignPath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_SETUP_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned_setup_engines.outputs.artifact-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: ${{ runner.temp }}/signed-setup-engines
+          parameters: |
+            version: "${{ env.RELEASE_VERSION }}"
+
+      - name: Reattach signed setup bundle engines
+        if: vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: ./scripts/bundle-signing.ps1 -Operation Reattach -Stage Setup -Directory (Join-Path $env:RUNNER_TEMP 'signed-setup-engines')
 
       - name: Stage setup bundle for SignPath
         if: vars.SIGNPATH_ENABLED == 'true'
@@ -333,7 +405,7 @@ jobs:
           github-artifact-id: ${{ steps.unsigned_setup.outputs.artifact-id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 3600
+          wait-for-completion-timeout-in-seconds: 1800
           output-artifact-directory: ${{ runner.temp }}/signed-setup
           parameters: |
             version: "${{ env.RELEASE_VERSION }}"

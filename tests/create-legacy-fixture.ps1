@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory)][string]$Destination,
     [Parameter(Mandatory)][string]$PayloadRoot,
-    [ValidateSet('0.9.0', '1.0.0')][string]$LegacyVersion = '1.0.0'
+    [ValidateSet('0.9.0', '1.0.0')][string]$LegacyVersion = '1.0.0',
+    [switch]$FailUninstall
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,8 +23,14 @@ $refs = "${env:ProgramFiles(x86)}\Reference Assemblies\Microsoft\Framework\.NETF
 if (-not (Test-Path -LiteralPath "$refs/mscorlib.dll")) { throw '.NET 4.8 reference assemblies missing for the legacy fixture' }
 & $csc /nologo /noconfig /nostdlib+ /target:exe "/out:$Destination/LegacyHelper.exe" "/r:$refs/mscorlib.dll" "/r:$refs/System.dll" "/r:$refs/System.Core.dll" "/r:$refs/System.IO.Compression.dll" "/r:$refs/System.IO.Compression.FileSystem.dll" "$PSScriptRoot/fixtures/LegacyHelper.cs"
 if ($LASTEXITCODE -ne 0) { throw 'Legacy helper fixture compilation failed' }
+if ($FailUninstall) {
+    & $csc /nologo /noconfig /nostdlib+ /target:exe "/out:$Destination/LegacyFailureGate.exe" "/r:$refs/mscorlib.dll" "$PSScriptRoot/fixtures/LegacyFailureGate.cs"
+    if ($LASTEXITCODE -ne 0) { throw 'Legacy failure-gate compilation failed' }
+}
 foreach ($name in @('LegacyInstaller', 'LegacyBundle')) {
-    & "$tools/candle.exe" -nologo -arch x86 -ext "$tools/WixBalExtension.dll" -ext "$tools/WixUtilExtension.dll" "-dRoot=$root" "-dPayloadRoot=$PayloadRoot" "-dDestination=$Destination" "-dLegacyVersion=$LegacyVersion" "$PSScriptRoot/fixtures/$name.wxs" -out "$Destination/$name.wixobj"
+    $defines = @()
+    if ($FailUninstall) { $defines += '-dFailUninstall=yes' }
+    & "$tools/candle.exe" -nologo -arch x86 -ext "$tools/WixBalExtension.dll" -ext "$tools/WixUtilExtension.dll" "-dRoot=$root" "-dPayloadRoot=$PayloadRoot" "-dDestination=$Destination" "-dLegacyVersion=$LegacyVersion" @defines "$PSScriptRoot/fixtures/$name.wxs" -out "$Destination/$name.wixobj"
     if ($LASTEXITCODE -ne 0) { throw "Legacy authoring compilation failed: $name" }
     $extension = if ($name -eq 'LegacyInstaller') { 'msi' } else { 'exe' }
     & "$tools/light.exe" -nologo -sice:ICE61 -sice:ICE69 -sice:ICE91 -ext "$tools/WixBalExtension.dll" -ext "$tools/WixUtilExtension.dll" "$Destination/$name.wixobj" -out "$Destination/$name.$extension"

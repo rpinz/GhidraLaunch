@@ -17,6 +17,14 @@
                  Compressed="no" DownloadUrl="https://example.invalid/Ghidra.zip" />
       </ExePackage>
       <MsiPackage SourceFile="$(var.Destination)\LegacyInstaller.msi" Compressed="yes" />
+      <?ifdef var.FailUninstall ?>
+      <!-- First on uninstall: fail before the cached legacy chain can change
+           anything. The incoming Core has already replaced its launcher MSI
+           and adopted the formerly plain-hash payload. -->
+      <ExePackage SourceFile="$(var.Destination)\LegacyFailureGate.exe"
+                  PerMachine="no" Cache="always" DetectCondition="1"
+                  UninstallCommand='"$(var.Destination)\fail-uninstall"' />
+      <?endif?>
     </Chain>
     <util:FileSearch Id="GhidraPayloadMarker" Variable="GhidraPayloadInstalled"
                      Path="[LocalAppDataFolder]Ghidra Launch\Ghidra\.ghidralaunch-source.sha256"

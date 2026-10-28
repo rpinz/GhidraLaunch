@@ -32,8 +32,8 @@ RUST_PROJECTS = {
     "helper-rust": ("GhidraLaunchGhidraHelperRS", "ghidra_launch_helper"),
 }
 LINKS = {
-    "setup-c": ("core-c", "java"),
-    "setup-rust": ("core-rust", "java"),
+    "setup-c": ("core-c", "helper-c", "java"),
+    "setup-rust": ("core-rust", "helper-rust", "java"),
     "core-c": ("installer-c", "helper-c", "ghidra"),
     "core-rust": ("installer-rust", "helper-rust", "ghidra"),
     "java": ("temurin",),

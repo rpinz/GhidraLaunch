@@ -37,6 +37,18 @@ class WingetManifestTests(unittest.TestCase):
     def test_prerelease_tag_is_skipped(self):
         self.assertFalse((self.generate("v1.2.3-rc1") / "rpinz.GhidraLaunchC").exists())
 
+    def test_native_revision_keeps_tag_but_maps_to_three_part_arp_version(self):
+        out = self.generate("v1.2.3.4")
+        for variant in winget_manifests.VARIANTS:
+            installer = (
+                out / f"rpinz.GhidraLaunch{variant}" / "1.2.3.4"
+                / f"rpinz.GhidraLaunch{variant}.installer.yaml"
+            ).read_text()
+            self.assertIn("PackageVersion: 1.2.3.4\n", installer)
+            self.assertIn("    DisplayVersion: 1.2.3\n", installer)
+            self.assertIn(f"/releases/download/v1.2.3.4/GhidraLaunchSetup{variant}.exe", installer)
+            self.assertNotIn("{{", installer)
+
 
 if __name__ == "__main__":
     unittest.main()

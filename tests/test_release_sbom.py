@@ -64,7 +64,7 @@ class ReleaseSbomTests(unittest.TestCase):
         self.assertTrue(any(c["name"] == "windows-sys" for c in cdx["components"]))
         self.assertIn(
             {"ref": "ghidralaunch:setup-c", "dependsOn": [
-                "ghidralaunch:core-c", "ghidralaunch:java"
+                "ghidralaunch:core-c", "ghidralaunch:helper-c", "ghidralaunch:java"
             ]},
             cdx["dependencies"],
         )

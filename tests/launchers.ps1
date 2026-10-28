@@ -1,4 +1,7 @@
-param([ValidateSet('Debug', 'Release')][string]$Configuration = 'Release')
+param(
+    [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release',
+    [string[]]$LauncherPath
+)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -26,15 +29,45 @@ function Invoke-Launcher($path, $workingDirectory, $expectedCode, $ghidraHome, $
     }
 }
 
+function Assert-LauncherFailure($path, $workingDirectory, $ghidraHome, $expectedText) {
+    $previousHome = $env:GHIDRA_HOME
+    $env:GHIDRA_HOME = $ghidraHome
+    $failure = $null
+    try {
+        $failure = Start-Process -FilePath $path -WorkingDirectory $workingDirectory -PassThru
+        $null = $failure.Handle
+        $deadline = (Get-Date).AddSeconds(20)
+        $diagnostic = $null
+        while (-not $failure.HasExited -and (Get-Date) -lt $deadline) {
+            $diagnostic = [LauncherDialog]::Dismiss($failure.Id, $expectedText)
+            if ($diagnostic) { break }
+            Start-Sleep -Milliseconds 100
+        }
+        $exited = $failure.WaitForExit(5000)
+        $failure.Refresh()
+        if (-not $exited -or $failure.ExitCode -ne 1 -or -not $diagnostic) {
+            throw "$path did not report '$expectedText' for GHIDRA_HOME '$ghidraHome' (exit=$($failure.ExitCode), diagnostic=$diagnostic)"
+        }
+    } finally {
+        if ($failure) {
+            if (-not $failure.HasExited) { $failure.Kill() }
+            $failure.Dispose()
+        }
+        $env:GHIDRA_HOME = $previousHome
+    }
+}
+
 try {
     New-Item -ItemType Directory -Path $scratch | Out-Null
     $recorder = Join-Path $scratch 'record-arguments.ps1'
     Set-Content -LiteralPath $recorder -Encoding Ascii -Value '[IO.File]::AppendAllText($env:GL_CAPTURE_PATH, (ConvertTo-Json -Compress -InputObject ([string]$env:GL_CAPTURE)) + "`n")'
 
-    $binaries = @(
-        (Join-Path $root "GhidraLaunchC/x64/$Configuration/bin/GhidraLaunchC.exe"),
-        (Join-Path $root 'GhidraLaunchRS/GhidraLaunchRS.exe')
-    )
+    $binaries = if ($LauncherPath) { @($LauncherPath | ForEach-Object { (Resolve-Path -LiteralPath $_).Path }) } else {
+        @(
+            (Join-Path $root "GhidraLaunchC/x64/$Configuration/bin/GhidraLaunchC.exe"),
+            (Join-Path $root 'GhidraLaunchRS/GhidraLaunchRS.exe')
+        )
+    }
     foreach ($binary in $binaries) {
         if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Missing launcher: $binary" }
         $directory = Join-Path $scratch ("Ghidra Launch " + [IO.Path]::GetFileNameWithoutExtension($binary))
@@ -56,9 +89,13 @@ try {
         $configuredBatch = Join-Path $configured 'ghidraRun.bat'
         $configuredMarker = Join-Path $configured 'called.txt'
         Set-Content -LiteralPath $configuredBatch -Value '@echo off', 'setlocal DisableDelayedExpansion', 'cd>"%~dp0called.txt"', 'exit /b 0' -Encoding Ascii
-        Invoke-Launcher $launcher $scratch 0 $configured
-        if (-not (Test-Path -LiteralPath $configuredMarker) -or (Get-Content -LiteralPath $configuredMarker -Raw).Trim() -ne $configured) {
-            throw "$launcher did not run the configured batch from GHIDRA_HOME"
+        $configuredHomes = @($configured, ('.\' + [IO.Path]::GetFileName($configured)))
+        foreach ($selectedHome in $configuredHomes) {
+            Remove-Item -LiteralPath $configuredMarker -ErrorAction SilentlyContinue
+            Invoke-Launcher $launcher $scratch 0 $selectedHome
+            if (-not (Test-Path -LiteralPath $configuredMarker) -or (Get-Content -LiteralPath $configuredMarker -Raw).Trim() -ne $configured) {
+                throw "$launcher did not run the configured batch from GHIDRA_HOME '$selectedHome'"
+            }
         }
         $env:GL_PS = (Get-Process -Id $PID).Path
         $env:GL_RECORDER = $recorder
@@ -69,11 +106,14 @@ try {
             'shift', 'set /a GL_INDEX+=1', 'goto next'
         $arguments = 'one "two words" "" "%PATH%" "!literal!" "^caret" "&and" "pipe|value" "日本語" "C:\tail\\" "a\"b"'
         try {
-            Invoke-Launcher $launcher $scratch 0 $configured $arguments
-            $actualArguments = @(Get-Content -LiteralPath $env:GL_CAPTURE_PATH | ForEach-Object { ConvertFrom-Json -InputObject $_ -NoEnumerate })
-            $expectedArguments = @('one', 'two words', '', '%PATH%', '!literal!', '^caret', '&and', 'pipe|value', '日本語', 'C:\tail\\', 'a\"b')
-            if (($actualArguments | ConvertTo-Json -Compress) -cne ($expectedArguments | ConvertTo-Json -Compress)) {
-                throw "$launcher changed fallback arguments: $($actualArguments | ConvertTo-Json -Compress)"
+            foreach ($selectedHome in $configuredHomes) {
+                Remove-Item -LiteralPath $env:GL_CAPTURE_PATH -ErrorAction SilentlyContinue
+                Invoke-Launcher $launcher $scratch 0 $selectedHome $arguments
+                $actualArguments = @(Get-Content -LiteralPath $env:GL_CAPTURE_PATH | ForEach-Object { ConvertFrom-Json -InputObject $_ -NoEnumerate })
+                $expectedArguments = @('one', 'two words', '', '%PATH%', '!literal!', '^caret', '&and', 'pipe|value', '日本語', 'C:\tail\\', 'a\"b')
+                if (($actualArguments | ConvertTo-Json -Compress) -cne ($expectedArguments | ConvertTo-Json -Compress)) {
+                    throw "$launcher changed fallback arguments with GHIDRA_HOME '$selectedHome': $($actualArguments | ConvertTo-Json -Compress)"
+                }
             }
         } finally {
             Remove-Item Env:GL_PS, Env:GL_RECORDER, Env:GL_CAPTURE_PATH -ErrorAction SilentlyContinue
@@ -132,7 +172,7 @@ public static class LauncherDialog {
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, StringBuilder text, int length);
     [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr value, IntPtr extra);
-    public static string Dismiss(int pid) {
+    public static string Dismiss(int pid, string expectedText) {
         string result = null;
         EnumWindows((window, context) => {
             uint owner;
@@ -148,7 +188,7 @@ public static class LauncherDialog {
                 labels.Append(text).Append('\n');
                 return true;
             }, IntPtr.Zero);
-            if (labels.ToString().IndexOf("JAVA_HOME", StringComparison.Ordinal) < 0) return true;
+            if (labels.ToString().IndexOf(expectedText, StringComparison.Ordinal) < 0) return true;
             result = labels.ToString();
             PostMessage(window, 0x10, IntPtr.Zero, IntPtr.Zero);
             return false;
@@ -160,13 +200,16 @@ public static class LauncherDialog {
 
     foreach ($binary in $binaries) {
         $name = [IO.Path]::GetFileNameWithoutExtension($binary)
-        $ghidra = Join-Path $scratch "Native $name"
+        $ghidra = Join-Path $scratch "Native café $name"
+        $relativeHome = '.\' + [IO.Path]::GetFileName($ghidra)
         New-Item -ItemType Directory -Path "$ghidra/support", "$ghidra/Ghidra/Framework/Utility/lib" | Out-Null
         Copy-Item -LiteralPath $binary -Destination $ghidra
         Set-Content -LiteralPath "$ghidra/ghidraRun.bat" -Value '@echo off', 'echo batch>"%~dp0batch.txt"', 'exit /b 7' -Encoding Ascii
         Set-Content -LiteralPath "$ghidra/Ghidra/application.properties" -Value 'application.name=Ghidra' -Encoding Ascii
         & (Join-Path $jdkBin 'jar.exe') cf "$ghidra/Ghidra/Framework/Utility/lib/Utility.jar" -C "$sources/out" ghidra
+        if ($LASTEXITCODE -ne 0) { throw 'Utility.jar fixture creation failed' }
         & (Join-Path $jdkBin 'jar.exe') cf "$ghidra/support/LaunchSupport.jar" -C "$sources/out" LaunchSupport.class
+        if ($LASTEXITCODE -ne 0) { throw 'LaunchSupport.jar fixture creation failed' }
         $marker = Join-Path $ghidra 'native.txt'
         $env:GL_MARKER = $marker
         $env:GL_TEST_KEEP = 'kept'
@@ -174,50 +217,35 @@ public static class LauncherDialog {
         $previousJavaHome = $env:JAVA_HOME
         $previousGhidraHome = $env:GHIDRA_HOME
         $env:JAVA_HOME = $jdkHome
-        $env:GHIDRA_HOME = $ghidra
         try {
-            $process = Start-Process -FilePath (Join-Path $ghidra ([IO.Path]::GetFileName($binary))) -ArgumentList 'one "two words"' -WorkingDirectory $scratch -PassThru
-            if (-not $process.WaitForExit(30000)) { throw "Native launcher timed out: $binary" }
-            if ($process.ExitCode -ne 0) { throw "$binary exited $($process.ExitCode) on native launch" }
-            $deadline = (Get-Date).AddSeconds(20)
-            while (-not (Test-Path -LiteralPath $marker) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
+            foreach ($selectedHome in @($ghidra, $relativeHome)) {
+                Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue
+                Invoke-Launcher (Join-Path $ghidra ([IO.Path]::GetFileName($binary))) $scratch 0 $selectedHome 'one "two words"'
+                $deadline = (Get-Date).AddSeconds(20)
+                while (-not (Test-Path -LiteralPath $marker) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
+                if (-not (Test-Path -LiteralPath $marker)) { throw "$binary did not start Java with GHIDRA_HOME '$selectedHome'" }
+                if (Test-Path -LiteralPath "$ghidra/batch.txt") { throw "$binary ran ghidraRun.bat instead of starting Java" }
+                $expected = @("dir=$ghidra", 'class=ghidra.GhidraRun', 'args=one|two words', 'prop=props/caller', 'env=from-props/kept')
+                $actual = Get-Content -LiteralPath $marker
+                if (($actual -join "`n") -ne ($expected -join "`n")) { throw "$binary launched Java unexpectedly with GHIDRA_HOME '$selectedHome':`n$($actual -join "`n")" }
+            }
         } finally {
             Remove-Item Env:GL_MARKER, Env:GL_TEST_KEEP, Env:GHIDRA_JAVA_OPTIONS -ErrorAction SilentlyContinue
             $env:JAVA_HOME = $previousJavaHome
             $env:GHIDRA_HOME = $previousGhidraHome
         }
-        if (-not (Test-Path -LiteralPath $marker)) { throw "$binary did not start Java directly" }
-        if (Test-Path -LiteralPath "$ghidra/batch.txt") { throw "$binary ran ghidraRun.bat instead of starting Java" }
-        $expected = @("dir=$ghidra", 'class=ghidra.GhidraRun', 'args=one|two words', 'prop=props/caller', 'env=from-props/kept')
-        $actual = Get-Content -LiteralPath $marker
-        if (($actual -join "`n") -ne ($expected -join "`n")) { throw "$binary launched Java unexpectedly:`n$($actual -join "`n")" }
         $env:GL_NO_JDK = '1'
         $previousGhidraHome = $env:GHIDRA_HOME
         $previousJavaHome = $env:JAVA_HOME
-        $env:GHIDRA_HOME = $ghidra
         $env:JAVA_HOME = $jdkHome
-        $failure = $null
         try {
-            $failure = Start-Process -FilePath (Join-Path $ghidra ([IO.Path]::GetFileName($binary))) -WorkingDirectory $scratch -PassThru
-            $null = $failure.Handle
-            $deadline = (Get-Date).AddSeconds(20)
-            $diagnostic = $null
-            while (-not $failure.HasExited -and (Get-Date) -lt $deadline) {
-                $diagnostic = [LauncherDialog]::Dismiss($failure.Id)
-                if ($diagnostic) { break }
-                Start-Sleep -Milliseconds 100
-            }
-            $exited = $failure.WaitForExit(5000)
-            $failure.Refresh()
-            if (-not $exited -or $failure.ExitCode -ne 1 -or $diagnostic -notmatch 'JAVA_HOME') {
-                throw "$binary did not report actionable JDK selection failure (exit=$($failure.ExitCode), diagnostic=$diagnostic)"
-            }
+            $launcher = Join-Path $ghidra ([IO.Path]::GetFileName($binary))
+            Assert-LauncherFailure $launcher $scratch $relativeHome 'JAVA_HOME'
             if (Test-Path -LiteralPath "$ghidra/batch.txt") { throw "$binary retried unsupported JDK selection through batch fallback" }
+            Remove-Item Env:GL_NO_JDK -ErrorAction SilentlyContinue
+            Assert-LauncherFailure $launcher $scratch ('.\Missing ' + $name) 'ghidraRun.bat'
+            if (Test-Path -LiteralPath "$ghidra/batch.txt") { throw "$binary ignored the missing relative GHIDRA_HOME" }
         } finally {
-            if ($failure) {
-                if (-not $failure.HasExited) { $failure.Kill() }
-                $failure.Dispose()
-            }
             Remove-Item Env:GL_NO_JDK -ErrorAction SilentlyContinue
             $env:GHIDRA_HOME = $previousGhidraHome
             $env:JAVA_HOME = $previousJavaHome

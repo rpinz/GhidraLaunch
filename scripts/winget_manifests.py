@@ -17,7 +17,11 @@ URL = "https://github.com/{repo}/releases/download/{tag}/GhidraLaunchSetup{varia
 
 
 def render(variant, version, url, sha256):
-    values = {"Variant": variant, "Version": version, "InstallerUrl": url, "InstallerSha256": sha256}
+    values = {
+        "Variant": variant, "Version": version,
+        "DisplayVersion": ".".join(version.split(".")[:3]),
+        "InstallerUrl": url, "InstallerSha256": sha256,
+    }
     files = {}
     for template in sorted(TEMPLATES.glob("Package*.yaml")):
         text = template.read_text(encoding="utf-8")
