@@ -17,8 +17,10 @@ Choose one variant; both provide the same functionality:
 Each setup contains its matching native launcher and extraction helper. The
 variants replace one another rather than installing side by side, including
 switching variants at the same release version. Both use the existing
-installation folder. An embedded native core retains the legacy upgrade family
-to migrate older combined installations.
+installation folder. The embedded native core has a Ghidra-specific upgrade
+family. Its native helper migrates older combined installations only when their
+registered product name, publisher, and legacy family all identify Ghidra Launch;
+unrelated applications that reused the old family are left alone.
 
 The setup bundle installs Temurin, Ghidra, and the selected launcher for you — no
 manual download or extraction needed. Run the setup bundle; it downloads the
@@ -32,7 +34,7 @@ approval. Neither native helper requires .NET or an external ZIP extraction
 tool on the installing machine.
 Temurin is a shared prerequisite and is retained when uninstalling or switching
 native variants; remove it separately through Windows Installed apps if needed.
-Setup first installs the native core and completes any legacy bundle removal,
+Setup first installs the native core and completes any matching legacy Ghidra bundle removal,
 then runs a separate native Java stage with fresh detection. This prevents old
 cached uninstallers from removing Java after setup has checked it. The core is
 committed before the Java stage: if Java installation fails, setup reports the
@@ -175,9 +177,15 @@ register dependencies on machine-wide packages, so native bundles deliberately
 mark Temurin permanent. Legacy cleanup completes in the core stage before the
 Java stage performs its own fresh detection/install.
 
+The Core chain installs the launcher and extracts/adopts its payload before
+running identity-filtered legacy cleanup. During each cached legacy uninstaller,
+the native helper temporarily relocates the incoming Ghidra tree and restores it
+afterwards, so older helpers cannot delete it. Installer regression fixtures
+include a higher-version unrelated bundle sharing the ambiguous legacy family.
+
 ### Native helper contract
 
-Both helpers accept case-insensitive commands and return 0 for success (including
+Extraction and removal accept case-insensitive commands and return 0 for success (including
 logged retention, source/ownership-mismatch skips, or postcommit cleanup warnings), 1 for an operation failure,
 and 2 for invalid usage:
 
@@ -185,6 +193,11 @@ and 2 for invalid usage:
 extract <zipPath> <destDir> [owner]
 remove <destDir> [zipPath] [owner]
 ```
+
+Setup also uses the private `migrate-legacy <destDir> <owner> <releaseVersion>`
+command. It only targets verified Ghidra Launch registrations and the managed
+destination. A successful migration can additionally return 3010 when a legacy
+uninstaller requests a restart.
 
 Extraction strips a single top-level directory, stages beside the destination,
 and records the ZIP's SHA-256 in `.ghidralaunch-source.sha256`. Both helpers

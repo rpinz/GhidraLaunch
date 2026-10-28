@@ -72,6 +72,7 @@ function Assert-Shortcuts([string]$Launcher) {
 }
 
 function Assert-Installed([string]$Variant, [string]$Version) {
+    if ($script:foreignInstalled) { Assert-ForeignBundle }
     $launcher = if ($Variant -eq 'C') { 'GhidraLaunchC.exe' } else { 'GhidraLaunchRS.exe' }
     $other = if ($Variant -eq 'C') { 'GhidraLaunchRS.exe' } else { 'GhidraLaunchC.exe' }
     if (-not (Test-Path -LiteralPath "$install/$launcher") -or (Test-Path -LiteralPath "$install/$other")) {
@@ -100,6 +101,7 @@ function Assert-Installed([string]$Variant, [string]$Version) {
 }
 
 function Assert-RetainedUninstall {
+    if ($script:foreignInstalled) { Assert-ForeignBundle }
     if (-not (Test-Path -LiteralPath "$install\Ghidra\ghidraRun.bat") -or
         [IO.File]::ReadAllText("$install\Ghidra\support\user.txt").Trim() -ne 'preserved') {
         throw 'Customized uninstall did not retain the complete Ghidra tree'
@@ -112,7 +114,17 @@ function Assert-RetainedUninstall {
     if ($owner) { throw 'Customized uninstall left an active payload ownership record' }
 }
 
+function Assert-ForeignBundle {
+    $foreignKey = 'HKLM:\Software\Ghidra Launch Tests\Foreign'
+    if (-not (Test-Path -LiteralPath $foreignKey) -or
+        (Get-ItemProperty -LiteralPath $foreignKey -Name Installed).Installed -ne 1) {
+        throw 'Ghidra setup removed the unrelated application sharing its legacy upgrade family'
+    }
+}
+
 $last = $null
+$foreignBundle = $null
+$script:foreignInstalled = $false
 $completed = $false
 try {
     foreach ($version in @('1.0.0', '1.0.1')) {
@@ -124,6 +136,7 @@ try {
             $dir = Join-Path $scratch "$version-$variant"
             New-Item -ItemType Directory -Path $dir | Out-Null
             Copy-Item "$root/GhidraLaunchSetup/bin/Release/GhidraLaunchSetup$variant.exe" $dir
+            Copy-Item "$root\GhidraLaunchInstaller\bin\Release\GhidraLaunchInstaller$variant.msi" $dir
             Copy-Item "$PayloadRoot/Ghidra.zip", "$PayloadRoot/OpenJDK21U-jdk_x64.msi" $dir
         }
     }
@@ -154,6 +167,43 @@ try {
             Remove-Item -LiteralPath "$install\Ghidra" -Recurse -Force
         }
     }
+    $packages = & dotnet nuget locals global-packages --list
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to locate restored WiX extension' }
+    $packageRoot = ($packages -replace '^global-packages:\s*', '').Trim()
+    $bal = Join-Path $packageRoot 'wixtoolset.bal.wixext\5.0.2\wixext5\WixToolset.BootstrapperApplications.wixext.dll'
+    $util = Join-Path $packageRoot 'wixtoolset.util.wixext\5.0.2\wixext5\WixToolset.Util.wixext.dll'
+    $legacyNative = Join-Path $scratch 'legacy-native-same-msi'
+    New-Item -ItemType Directory -Path $legacyNative | Out-Null
+    & dotnet tool run wix build "$PSScriptRoot\fixtures\LegacyNativeBundle.wxs" -arch x86 -ext $bal -ext $util `
+        -d "LauncherMsi=$scratch\1.0.0-C\GhidraLaunchInstallerC.msi" `
+        -d "Helper=$root\GhidraLaunchGhidraHelperC\x64\Release\bin\GhidraLaunchGhidraHelperC.exe" `
+        -d "PayloadRoot=$PayloadRoot" -o "$legacyNative\LegacyNativeBundle.exe"
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to build same-MSI native legacy fixture' }
+    Copy-Item "$PayloadRoot\Ghidra.zip" $legacyNative
+    $last = "$legacyNative\LegacyNativeBundle.exe"
+    Invoke-Bundle $last '/install'
+    Set-Content -LiteralPath "$install\Ghidra\support\user.txt" -Value 'preserved'
+    $last = "$scratch\1.0.0-C\GhidraLaunchSetupC.exe"
+    Invoke-Bundle $last '/install'
+    Assert-Installed C '1.0.0'
+    if ([IO.File]::ReadAllText("$install\Ghidra\support\user.txt").Trim() -ne 'preserved') {
+        throw 'Same-MSI native legacy migration lost user additions'
+    }
+    Invoke-Bundle $last '/uninstall'
+    $last = $null
+    Assert-RetainedUninstall
+    Remove-Item -LiteralPath "$install\Ghidra" -Recurse -Force
+
+    $foreign = Join-Path $scratch 'foreign-upgrade-family'
+    New-Item -ItemType Directory -Path $foreign | Out-Null
+    & dotnet tool run wix build "$PSScriptRoot\fixtures\ForeignInstaller.wxs" -arch x64 -o "$foreign\ForeignInstaller.msi"
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to build foreign MSI fixture' }
+    & dotnet tool run wix build "$PSScriptRoot\fixtures\ForeignBundle.wxs" -arch x64 -ext $bal -d "ForeignMsi=$foreign\ForeignInstaller.msi" -o "$foreign\ForeignBundle.exe"
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to build foreign bundle fixture' }
+    $foreignBundle = "$foreign\ForeignBundle.exe"
+    Invoke-Bundle $foreignBundle '/install'
+    $script:foreignInstalled = $true
+    Assert-ForeignBundle
     foreach ($step in @(@('1.0.0', 'C'), @('1.0.0', 'C'), @('1.0.0', 'Rust'), @('1.0.0', 'C'), @('1.0.1', 'Rust'), @('1.0.1', 'C'))) {
         $version, $variant = $step
         $last = "$scratch/$version-$variant/GhidraLaunchSetup$variant.exe"
@@ -299,12 +349,20 @@ try {
     Invoke-Bundle $last '/uninstall'
     $last = $null
     if (Test-Path -LiteralPath "$install\Ghidra") { throw 'Clean uninstall left its owned Ghidra tree' }
-    Write-Host 'Legacy migration, preservation, retained-tree reinstall, downgrade, and variant switching checks passed.'
+    Assert-ForeignBundle
+    Write-Host 'Legacy migration, foreign-family coexistence, preservation, and variant switching checks passed.'
     $completed = $true
 } catch {
     Write-Host "Upgrade failure diagnostics: $LogRoot"
     throw
 } finally {
+    $foreignCleanupError = $null
+    try {
+        if ($foreignBundle) { Invoke-Bundle $foreignBundle '/uninstall' }
+    } catch {
+        if ($completed) { $foreignCleanupError = $_ }
+        else { Write-Warning "Foreign fixture cleanup failed after the original upgrade error: $_" }
+    }
     try {
         if ($last) { Invoke-Bundle $last '/uninstall' }
     } catch {
@@ -322,5 +380,6 @@ try {
             if ($completed) { throw }
             Write-Warning "Input restoration failed after the original upgrade error: $_"
         }
+        if ($foreignCleanupError) { throw $foreignCleanupError }
     }
 }

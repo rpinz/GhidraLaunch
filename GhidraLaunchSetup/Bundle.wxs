@@ -49,7 +49,7 @@
           Copyright="$(var.BundleCopyright)"
           IconSourceFile="..\Resources\Ghidra.ico"
           SplashScreenSourceFile="..\Resources\Splash.bmp"
-          UpgradeCode="{DFE05126-B29E-4298-A06B-63F833BC0BF8}"
+          UpgradeCode="{D2557D9A-CD4F-4AD2-B84A-0289EF4208DE}"
           Condition="VersionNT >= v10.0 AND VersionNT64 >= v10.0 AND WindowsBuildNumber >= 17763">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication
@@ -73,6 +73,14 @@
                  SourceFile="$(var.PayloadRoot)\Ghidra.zip" Compressed="no"
                  DownloadUrl="$(var.GhidraDownloadUrl)" />
       </ExePackage>
+      <!-- The legacy family is shared by unrelated applications. Only the
+           native helper may select genuine Ghidra registrations for removal. -->
+      <ExePackage Id="LegacyGhidra$(var.Variant)" DisplayName="Finishing legacy Ghidra migration"
+                  SourceFile="$(var.HelperPath)" Name="GhidraLaunchLegacyMigration$(var.Variant).exe"
+                  CacheId="$(var.LegacyMigrationCacheId)"
+                  Compressed="yes" PerMachine="no" Permanent="yes" Vital="yes"
+                  InstallArguments='migrate-legacy "[LocalAppDataFolder]Ghidra Launch\Ghidra" "[WixBundleProviderKey]" "$(var.ReleaseVersion)"'
+                  DetectCondition="0" />
     </Chain>
     <util:FileSearch Id="GhidraPayloadMarker" Variable="GhidraPayloadInstalled"
                      Path="[LocalAppDataFolder]Ghidra Launch\Ghidra\.ghidralaunch-source.sha256"

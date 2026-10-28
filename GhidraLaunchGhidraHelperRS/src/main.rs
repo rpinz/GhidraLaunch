@@ -12,6 +12,7 @@ const MARKER_NAME: &str = ".ghidralaunch-source.sha256";
 const INVENTORY_NAME: &str = ".ghidralaunch-inventory";
 const REMOVAL_NAME: &str = ".ghidralaunch-removal";
 const METADATA_NAMES: [&str; 3] = [MARKER_NAME, INVENTORY_NAME, REMOVAL_NAME];
+const LEGACY_FAMILY: &str = "{DFE05126-B29E-4298-A06B-63F833BC0BF8}";
 #[cfg(windows)]
 const OWNER_KEY: &str = r"Software\rpinz\Ghidra Launch";
 #[cfg(windows)]
@@ -221,6 +222,33 @@ fn run(arguments: &[OsString]) -> Result<i32, String> {
         return Ok(0);
     }
 
+    if command.eq_ignore_ascii_case("migrate-legacy") && arguments.len() == 4 {
+        let owner = match owner_from_os(&arguments[2]) {
+            Ok(owner) => owner,
+            Err(error) => {
+                eprintln!("Invalid owner: {error}");
+                return Ok(2);
+            }
+        };
+        let version = match arguments[3].to_str().and_then(parse_release_version) {
+            Some(version) => version,
+            None => {
+                eprintln!("Release version must have three or four normalized numeric components.");
+                return Ok(2);
+            }
+        };
+        let dest = Path::new(&arguments[1]);
+        validate_migration_destination(dest)?;
+        let registrations = enumerate_legacy_registrations()?;
+        return migrate_legacy_records(
+            dest,
+            &owner,
+            version,
+            &registrations,
+            run_legacy_uninstaller,
+        );
+    }
+
     usage();
     Ok(2)
 }
@@ -228,6 +256,9 @@ fn run(arguments: &[OsString]) -> Result<i32, String> {
 fn usage() {
     eprintln!("Usage: GhidraLaunchGhidraHelperRS extract <zipPath> <destDir> [owner]");
     eprintln!("       GhidraLaunchGhidraHelperRS remove <destDir> [zipPath] [owner]");
+    eprintln!(
+        "       GhidraLaunchGhidraHelperRS migrate-legacy <destDir> <owner> <releaseVersion>"
+    );
 }
 
 fn owner_from_os(value: &OsStr) -> Result<String, String> {
@@ -250,6 +281,588 @@ fn validate_owner(owner: &str) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Default)]
+struct LegacyRegistration {
+    location: String,
+    name: Option<String>,
+    publisher: Option<String>,
+    upgrade_codes: Vec<String>,
+    version: Option<String>,
+    cache: Option<String>,
+}
+
+impl LegacyRegistration {
+    fn is_ghidra_legacy(&self) -> bool {
+        self.name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("Ghidra Launch"))
+            && self
+                .publisher
+                .as_deref()
+                .is_some_and(|publisher| publisher.eq_ignore_ascii_case("rpinz"))
+            && self
+                .upgrade_codes
+                .iter()
+                .any(|code| code.eq_ignore_ascii_case(LEGACY_FAMILY))
+    }
+}
+
+#[cfg(any(windows, test))]
+enum LegacyRegistryValue {
+    String(Vec<u8>),
+    MultiString(Vec<u8>),
+    Other,
+}
+
+#[cfg(any(windows, test))]
+fn legacy_registry_utf16(data: &[u8]) -> Option<Vec<u16>> {
+    let (pairs, remainder) = data.as_chunks::<2>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    Some(pairs.iter().copied().map(u16::from_le_bytes).collect())
+}
+
+#[cfg(any(windows, test))]
+impl LegacyRegistryValue {
+    fn scalar(&self) -> Option<String> {
+        let Self::String(data) = self else {
+            return None;
+        };
+        let units = legacy_registry_utf16(data)?;
+        let (&terminator, text) = units.split_last()?;
+        if terminator != 0 || text.contains(&0) {
+            return None;
+        }
+        String::from_utf16(text).ok()
+    }
+
+    fn upgrade_codes(&self) -> Option<Vec<String>> {
+        let Self::MultiString(data) = self else {
+            return self.scalar().map(|text| vec![text]);
+        };
+        let units = legacy_registry_utf16(data)?;
+        if !units.ends_with(&[0, 0]) {
+            return None;
+        }
+        let body = &units[..units.len() - 2];
+        if body.is_empty() {
+            return Some(Vec::new());
+        }
+        body.split(|unit| *unit == 0)
+            .map(|text| {
+                if text.is_empty() {
+                    None
+                } else {
+                    String::from_utf16(text).ok()
+                }
+            })
+            .collect()
+    }
+}
+
+fn parse_release_version(text: &str) -> Option<[u32; 4]> {
+    let parts: Vec<_> = text.split('.').collect();
+    if !(3..=4).contains(&parts.len()) {
+        return None;
+    }
+    let mut version = [0; 4];
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty()
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            return None;
+        }
+        version[index] = part.parse().ok()?;
+    }
+    Some(version)
+}
+
+fn validate_migration_destination(dest: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    let managed = TEST_HOOKS.with(|hooks| hooks.borrow().owner_dest.as_deref() == Some(dest));
+    #[cfg(all(windows, not(test)))]
+    let managed = dest.is_absolute() && manages_owner_record(dest);
+    #[cfg(all(not(windows), not(test)))]
+    let managed = false;
+    if !managed {
+        return Err(
+            "legacy migration is restricted to the managed LOCALAPPDATA\\Ghidra Launch\\Ghidra destination"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_legacy_cache(path: &Path) -> Result<(), String> {
+    if !path.is_absolute()
+        || !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+        || path.components().any(|component| match component {
+            Component::CurDir | Component::ParentDir => true,
+            Component::Normal(name) => name.to_string_lossy().contains(':'),
+            _ => false,
+        })
+    {
+        return Err("BundleCachePath must name an absolute ordinary executable (.exe)".into());
+    }
+    reject_reparse_ancestors(sibling_parent(path))?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot access BundleCachePath {}: {error}", path.display()))?;
+    if !metadata.is_file() || is_reparse_point(path).map_err(|error| error.to_string())? {
+        return Err(format!(
+            "BundleCachePath is not an ordinary file: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn preflight_legacy(
+    registrations: &[LegacyRegistration],
+    incoming: [u32; 4],
+) -> Result<Vec<PathBuf>, String> {
+    let mut caches = BTreeMap::new();
+    for record in registrations
+        .iter()
+        .filter(|record| record.is_ghidra_legacy())
+    {
+        let context = || format!("genuine legacy Ghidra registration {}", record.location);
+        let version = record
+            .version
+            .as_deref()
+            .and_then(parse_release_version)
+            .ok_or_else(|| {
+                format!(
+                    "{} has missing or invalid BundleVersion; repair its installation before retrying",
+                    context()
+                )
+            })?;
+        if version > incoming {
+            return Err(format!(
+                "{} is newer than this release (BundleVersion {}); install an equal or newer release instead",
+                context(),
+                record.version.as_deref().unwrap_or_default()
+            ));
+        }
+        let cache = record
+            .cache
+            .as_deref()
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "{} has no BundleCachePath; repair its installation before retrying",
+                    context()
+                )
+            })?;
+        let cache = PathBuf::from(cache);
+        validate_legacy_cache(&cache).map_err(|error| {
+            format!(
+                "{}: {error}; restore its cached installer or repair its installation before retrying",
+                context()
+            )
+        })?;
+        #[cfg(windows)]
+        let key = comparable_path(&cache);
+        #[cfg(not(windows))]
+        let key = cache.to_string_lossy().into_owned();
+        caches.entry(key).or_insert(cache);
+    }
+    Ok(caches.into_values().collect())
+}
+
+fn rename_legacy_tree(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+        let source = to_wide_verbatim(source)?;
+        let destination = to_wide_verbatim(destination)?;
+        if unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        if fs::symlink_metadata(destination).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "destination exists",
+            ));
+        }
+        fs::rename(source, destination)
+    }
+}
+
+fn preserve_legacy_payload(dest: &Path) -> Result<PathBuf, String> {
+    for _ in 0..128 {
+        let backup = unique_sibling_path(sibling_parent(dest), dest, "legacy");
+        match fs::symlink_metadata(&backup) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("cannot inspect {}: {error}", backup.display())),
+        }
+        rename_legacy_tree(dest, &backup)
+            .map_err(|error| format!("cannot preserve incoming payload: {error}"))?;
+        return Ok(backup);
+    }
+    Err("cannot allocate a unique legacy migration backup".into())
+}
+
+fn restore_legacy_payload(dest: &Path, backup: &Path) -> Result<DestinationLock, String> {
+    let lock = fault("legacy-relock")
+        .map_err(|error| error.to_string())
+        .and_then(|()| DestinationLock::acquire(dest))?;
+    validate_destination_path(sibling_parent(dest))?;
+    match fs::symlink_metadata(dest) {
+        Ok(_) => {
+            return Err(format!(
+                "unexpected destination {}; refusing to overwrite it",
+                dest.display()
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("cannot inspect destination: {error}")),
+    }
+    fault("legacy-restore")
+        .and_then(|()| rename_legacy_tree(backup, dest))
+        .map_err(|error| format!("cannot restore incoming payload: {error}"))?;
+    Ok(lock)
+}
+
+fn migrate_legacy_records(
+    dest: &Path,
+    owner: &str,
+    incoming: [u32; 4],
+    registrations: &[LegacyRegistration],
+    mut runner: impl FnMut(&Path, &str) -> Result<i32, String>,
+) -> Result<i32, String> {
+    validate_owner(owner)?;
+    validate_migration_destination(dest)?;
+    let caches = preflight_legacy(registrations, incoming)?;
+    if caches.is_empty() {
+        return Ok(0);
+    }
+    validate_destination_path(dest)?;
+    let lock = DestinationLock::acquire(dest)?;
+    validate_destination_path(dest)?;
+    let marker = read_marker(&dest.join(MARKER_NAME)).ok_or(
+        "incoming payload has no valid source marker; extract this release before migration",
+    )?;
+    if marker.owner.as_deref() != Some(owner) {
+        return Err("incoming payload owner does not match the migration owner; extract/adopt this release before migration".into());
+    }
+    let backup = preserve_legacy_payload(dest)?;
+    // Old helpers lock this path even when absent. Never expose the incoming
+    // tree (or its backup path) to those uninstallers.
+    drop(lock);
+    let result = (|| {
+        let mut reboot = false;
+        for cache in &caches {
+            match runner(cache, owner)? {
+                0 => {}
+                3010 => reboot = true,
+                code => {
+                    return Err(format!(
+                        "legacy uninstaller {} failed with exit code {code}",
+                        cache.display()
+                    ));
+                }
+            }
+        }
+        Ok(if reboot { 3010 } else { 0 })
+    })();
+    let _lock = restore_legacy_payload(dest, &backup).map_err(|error| {
+        let operation = result.as_ref().err().map_or(String::new(), |error| format!("{error}; "));
+        format!(
+            "{operation}{error}. Incoming payload remains intact at {}; restore it to {} after resolving the conflict",
+            backup.display(),
+            dest.display()
+        )
+    })?;
+    // A same-owner legacy helper can clear the ownership record while the
+    // destination is absent. Reassert the restored incoming tree's ownership.
+    set_owner_record(dest, owner).map_err(|error| {
+        let operation = result.as_ref().err().map_or(String::new(), |error| format!("{error}; "));
+        format!("{operation}incoming payload was restored, but its ownership record could not be restored: {error}")
+    })?;
+    result
+}
+
+fn legacy_uninstall_command(cache: &Path, owner: &str, log: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(cache);
+    // Related-upgrade mode bypasses bundle blocking without disabling the
+    // package dependency checks that protect the incoming Core's shared MSI.
+    command
+        .args([
+            "/uninstall",
+            "/quiet",
+            "/norestart",
+            "-burn.related.upgrade",
+            "-parent",
+        ])
+        .arg(owner)
+        .arg("/log")
+        .arg(log);
+    command
+}
+
+fn run_legacy_uninstaller(cache: &Path, owner: &str) -> Result<i32, String> {
+    #[cfg(test)]
+    {
+        let _ = (cache, owner);
+        Err("unit tests must inject a legacy process runner; native execution is forbidden".into())
+    }
+    #[cfg(not(test))]
+    {
+        validate_owner(owner)?;
+        // Recheck immediately before launch as an earlier selected bundle may
+        // have removed a shared cache. Never fall back to an uninstall string.
+        validate_legacy_cache(cache)?;
+        let log_root = env::temp_dir();
+        reject_reparse_ancestors(&log_root)?;
+        let log = (0..128)
+            .find_map(|_| {
+                let mut name = unique_sibling_path(&log_root, Path::new("GhidraLaunch"), "legacy")
+                    .into_os_string();
+                name.push(".log");
+                let path = PathBuf::from(name);
+                match OpenOptions::new().write(true).create_new(true).open(&path) {
+                    Ok(_) => Some(Ok(path)),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
+                    Err(error) => Some(Err(format!("cannot create legacy uninstall log: {error}"))),
+                }
+            })
+            .unwrap_or_else(|| Err("cannot allocate a unique legacy uninstall log".into()))?;
+        let status = legacy_uninstall_command(cache, owner, &log)
+            .status()
+            .map_err(|error| {
+                format!(
+                    "cannot run legacy uninstaller {} (log {}): {error}",
+                    cache.display(),
+                    log.display()
+                )
+            })?;
+        println!("Legacy uninstall log: {}", log.display());
+        status.code().ok_or_else(|| {
+            format!(
+                "legacy uninstaller {} terminated without an exit code (log {})",
+                cache.display(),
+                log.display()
+            )
+        })
+    }
+}
+
+#[cfg(any(not(windows), test))]
+fn enumerate_legacy_registrations() -> Result<Vec<LegacyRegistration>, String> {
+    Err("native legacy registry enumeration requires Windows and is forbidden in unit tests".into())
+}
+
+#[cfg(all(windows, not(test)))]
+fn enumerate_legacy_registrations() -> Result<Vec<LegacyRegistration>, String> {
+    use windows_sys::Win32::Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND,
+        ERROR_SUCCESS,
+    };
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
+        HKEY_LOCAL_MACHINE, KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_WOW64_32KEY,
+        KEY_WOW64_64KEY, REG_MULTI_SZ, REG_SZ,
+    };
+    struct Key(HKEY);
+    impl Drop for Key {
+        fn drop(&mut self) {
+            unsafe { RegCloseKey(self.0) };
+        }
+    }
+    fn read_value(key: HKEY, name: &str) -> Result<Option<LegacyRegistryValue>, String> {
+        let name = wide(name);
+        let mut bytes = 0;
+        let mut kind = 0;
+        let status = unsafe {
+            RegQueryValueExW(
+                key,
+                name.as_ptr(),
+                std::ptr::null(),
+                &mut kind,
+                std::ptr::null_mut(),
+                &mut bytes,
+            )
+        };
+        if status == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+        if status != ERROR_SUCCESS {
+            return Err(format!(
+                "cannot query legacy registry value: {}",
+                io::Error::from_raw_os_error(status as i32)
+            ));
+        }
+        if !matches!(kind, REG_SZ | REG_MULTI_SZ) {
+            return Ok(Some(LegacyRegistryValue::Other));
+        }
+        if bytes > 1024 * 1024 {
+            return Ok(None);
+        }
+        let expected_kind = kind;
+        let mut data = vec![0u8; bytes as usize];
+        let status = unsafe {
+            RegQueryValueExW(
+                key,
+                name.as_ptr(),
+                std::ptr::null(),
+                &mut kind,
+                data.as_mut_ptr(),
+                &mut bytes,
+            )
+        };
+        if status == ERROR_MORE_DATA
+            || status == ERROR_FILE_NOT_FOUND
+            || kind != expected_kind
+            || bytes as usize > data.len()
+        {
+            return Err("legacy registration changed during enumeration; retry migration".into());
+        }
+        if status != ERROR_SUCCESS {
+            return Err(format!(
+                "cannot read legacy registry value: {}",
+                io::Error::from_raw_os_error(status as i32)
+            ));
+        }
+        data.truncate(bytes as usize);
+        Ok(Some(match kind {
+            REG_SZ => LegacyRegistryValue::String(data),
+            REG_MULTI_SZ => LegacyRegistryValue::MultiString(data),
+            _ => LegacyRegistryValue::Other,
+        }))
+    }
+    fn read_string(key: HKEY, name: &str) -> Result<Option<String>, String> {
+        Ok(read_value(key, name)?.and_then(|value| value.scalar()))
+    }
+    fn read_upgrade_codes(key: HKEY) -> Result<Vec<String>, String> {
+        Ok(read_value(key, "BundleUpgradeCode")?
+            .and_then(|value| value.upgrade_codes())
+            .unwrap_or_default())
+    }
+    let mut records = Vec::new();
+    for (scope, root) in [("HKCU", HKEY_CURRENT_USER), ("HKLM", HKEY_LOCAL_MACHINE)] {
+        for (view, flag) in [("32", KEY_WOW64_32KEY), ("64", KEY_WOW64_64KEY)] {
+            let uninstall = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
+            let mut handle = std::ptr::null_mut();
+            let status = unsafe {
+                RegOpenKeyExW(
+                    root,
+                    wide(uninstall).as_ptr(),
+                    0,
+                    KEY_ENUMERATE_SUB_KEYS | flag,
+                    &mut handle,
+                )
+            };
+            if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND {
+                continue;
+            }
+            if status != ERROR_SUCCESS {
+                return Err(format!(
+                    "cannot enumerate {scope} {view}-bit legacy bundles: {}",
+                    io::Error::from_raw_os_error(status as i32)
+                ));
+            }
+            let parent = Key(handle);
+            let mut index = 0;
+            loop {
+                let mut name = [0u16; 256];
+                let mut length = name.len() as u32;
+                let status = unsafe {
+                    RegEnumKeyExW(
+                        parent.0,
+                        index,
+                        name.as_mut_ptr(),
+                        &mut length,
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    )
+                };
+                if status == ERROR_NO_MORE_ITEMS {
+                    break;
+                }
+                if status != ERROR_SUCCESS {
+                    return Err(format!(
+                        "cannot enumerate {scope} {view}-bit legacy bundle key: {}",
+                        io::Error::from_raw_os_error(status as i32)
+                    ));
+                }
+                index += 1;
+                let location = format!(
+                    "{scope}\\{uninstall}\\{} ({view}-bit)",
+                    String::from_utf16_lossy(&name[..length as usize])
+                );
+                let mut handle = std::ptr::null_mut();
+                let status = unsafe {
+                    RegOpenKeyExW(
+                        parent.0,
+                        name.as_ptr(),
+                        0,
+                        KEY_QUERY_VALUE | flag,
+                        &mut handle,
+                    )
+                };
+                if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND {
+                    return Err(format!(
+                        "legacy registration {location} disappeared; retry migration"
+                    ));
+                }
+                if status != ERROR_SUCCESS {
+                    return Err(format!(
+                        "cannot read legacy registration {location}: {}",
+                        io::Error::from_raw_os_error(status as i32)
+                    ));
+                }
+                let key = Key(handle);
+                let mut record = LegacyRegistration {
+                    location,
+                    name: read_string(key.0, "DisplayName")?,
+                    ..LegacyRegistration::default()
+                };
+                if !record
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("Ghidra Launch"))
+                {
+                    continue;
+                }
+                record.publisher = read_string(key.0, "Publisher")?;
+                if !record
+                    .publisher
+                    .as_deref()
+                    .is_some_and(|publisher| publisher.eq_ignore_ascii_case("rpinz"))
+                {
+                    continue;
+                }
+                record.upgrade_codes = read_upgrade_codes(key.0)?;
+                if !record.is_ghidra_legacy() {
+                    continue;
+                }
+                record.version = read_string(key.0, "BundleVersion")?;
+                record.cache = read_string(key.0, "BundleCachePath")?;
+                records.push(record);
+            }
+        }
+    }
+    Ok(records)
 }
 
 /// The record describes the tree Setup manages, so it is maintained only for
@@ -2384,6 +2997,466 @@ mod tests {
             zip.write_all(data.as_bytes()).unwrap();
         }
         zip.finish().unwrap();
+    }
+
+    fn legacy_record(cache: &Path, version: &str) -> LegacyRegistration {
+        LegacyRegistration {
+            location: "HKCU\\Uninstall\\fixture (64-bit)".into(),
+            name: Some("Ghidra Launch".into()),
+            publisher: Some("rpinz".into()),
+            upgrade_codes: vec![LEGACY_FAMILY.into()],
+            version: Some(version.into()),
+            cache: Some(cache.to_str().unwrap().into()),
+        }
+    }
+
+    fn legacy_registry_bytes(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn migration_registry_scalars_require_exact_terminated_reg_sz() {
+        for text in ["Ghidra Launch", "rpinz", "測試 🦀", ""] {
+            assert_eq!(
+                LegacyRegistryValue::String(legacy_registry_bytes(&format!("{text}\0"))).scalar(),
+                Some(text.into())
+            );
+        }
+        for data in [
+            Vec::new(),
+            legacy_registry_bytes("Ghidra Launch"),
+            legacy_registry_bytes("\0Ghidra Launch\0"),
+            legacy_registry_bytes("Ghidra\0 Launch\0"),
+            legacy_registry_bytes("Ghidra Launch\0\0"),
+            vec![b'G'],
+            vec![0x00, 0xd8, 0x00, 0x00],
+            vec![0x00, 0xdc, 0x00, 0x00],
+        ] {
+            assert!(
+                LegacyRegistryValue::String(data.clone()).scalar().is_none(),
+                "accepted malformed REG_SZ bytes {data:?}"
+            );
+        }
+        assert!(
+            LegacyRegistryValue::MultiString(legacy_registry_bytes("Ghidra Launch\0\0"))
+                .scalar()
+                .is_none()
+        );
+        assert!(LegacyRegistryValue::Other.scalar().is_none());
+    }
+
+    #[test]
+    fn migration_registry_upgrade_lists_require_complete_strict_multi_sz() {
+        assert_eq!(
+            LegacyRegistryValue::MultiString(legacy_registry_bytes(&format!(
+                "another-family\0{LEGACY_FAMILY}\0\0"
+            )))
+            .upgrade_codes(),
+            Some(vec!["another-family".into(), LEGACY_FAMILY.into()])
+        );
+        assert_eq!(
+            LegacyRegistryValue::MultiString(legacy_registry_bytes("\0\0")).upgrade_codes(),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            LegacyRegistryValue::String(legacy_registry_bytes(&format!("{LEGACY_FAMILY}\0")))
+                .upgrade_codes(),
+            Some(vec![LEGACY_FAMILY.into()])
+        );
+        for data in [
+            Vec::new(),
+            legacy_registry_bytes("\0"),
+            legacy_registry_bytes(LEGACY_FAMILY),
+            legacy_registry_bytes(&format!("{LEGACY_FAMILY}\0")),
+            legacy_registry_bytes(&format!("\0{LEGACY_FAMILY}\0\0")),
+            legacy_registry_bytes(&format!("{LEGACY_FAMILY}\0\0\0")),
+            legacy_registry_bytes(&format!("other\0\0{LEGACY_FAMILY}\0\0")),
+            vec![0x00, 0xd8, 0x00, 0x00, 0x00, 0x00],
+            vec![0x00, 0xdc, 0x00, 0x00, 0x00, 0x00],
+            vec![b'G'],
+        ] {
+            assert!(
+                LegacyRegistryValue::MultiString(data.clone())
+                    .upgrade_codes()
+                    .is_none(),
+                "accepted malformed REG_MULTI_SZ bytes {data:?}"
+            );
+        }
+        assert!(LegacyRegistryValue::Other.upgrade_codes().is_none());
+    }
+
+    #[test]
+    fn migration_malformed_raw_registry_identities_never_become_candidates() {
+        let mut records = Vec::new();
+        for (name, publisher) in [
+            (
+                LegacyRegistryValue::String(legacy_registry_bytes("\0Ghidra Launch\0")),
+                LegacyRegistryValue::String(legacy_registry_bytes("rpinz\0")),
+            ),
+            (
+                LegacyRegistryValue::MultiString(legacy_registry_bytes("Ghidra Launch\0\0")),
+                LegacyRegistryValue::String(legacy_registry_bytes("rpinz\0")),
+            ),
+            (
+                LegacyRegistryValue::String(legacy_registry_bytes("Ghidra Launch\0")),
+                LegacyRegistryValue::String(legacy_registry_bytes("\0rpinz\0")),
+            ),
+            (
+                LegacyRegistryValue::String(legacy_registry_bytes("Ghidra Launch\0")),
+                LegacyRegistryValue::MultiString(legacy_registry_bytes("rpinz\0\0")),
+            ),
+        ] {
+            let mut record =
+                legacy_record(Path::new("must-not-access.exe"), "invalid foreign version");
+            record.name = name.scalar();
+            record.publisher = publisher.scalar();
+            records.push(record);
+        }
+        for data in [
+            legacy_registry_bytes(&format!("\0{LEGACY_FAMILY}\0\0")),
+            legacy_registry_bytes(&format!("{LEGACY_FAMILY}\0")),
+            legacy_registry_bytes(&format!("{LEGACY_FAMILY}\0\0\0")),
+        ] {
+            let mut record =
+                legacy_record(Path::new("must-not-access.exe"), "invalid foreign version");
+            record.upgrade_codes = LegacyRegistryValue::MultiString(data)
+                .upgrade_codes()
+                .unwrap_or_default();
+            records.push(record);
+        }
+        assert!(preflight_legacy(&records, [1, 0, 0, 0]).unwrap().is_empty());
+    }
+
+    fn migration_backups(fixture: &Fixture) -> Vec<PathBuf> {
+        fs::read_dir(&fixture.root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains(".legacy-")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn migration_ignores_foreign_identity_before_version_and_cache_checks() {
+        let fixture = Fixture::new("migration-foreign");
+        let mut records = Vec::new();
+        for version in ["999.0.0.0", "foreign-invalid-version"] {
+            let record = legacy_record(Path::new("missing.exe"), version);
+            for name in ["Other application", "Ghidra Launch extra", "Ghidra Launch "] {
+                let mut foreign = record.clone();
+                foreign.name = Some(name.into());
+                records.push(foreign);
+            }
+            let mut foreign = record.clone();
+            foreign.publisher = Some("another publisher".into());
+            records.push(foreign);
+            let mut foreign = record.clone();
+            foreign.upgrade_codes = vec![format!("prefix{LEGACY_FAMILY}suffix")];
+            records.push(foreign);
+            let mut foreign = record.clone();
+            foreign.upgrade_codes = vec!["{D2557D9A-CD4F-4AD2-B84A-0289EF4208DE}".into()];
+            records.push(foreign);
+            let mut foreign = record.clone();
+            foreign.name = None;
+            records.push(foreign);
+            let mut foreign = record;
+            foreign.publisher = None;
+            records.push(foreign);
+        }
+        let before = fs::read_dir(&fixture.root).unwrap().count();
+        assert_eq!(
+            migrate_legacy_records(&fixture.dest, "incoming", [1, 2, 3, 0], &records, |_, _| {
+                panic!("foreign bundle must never run")
+            })
+            .unwrap(),
+            0
+        );
+        assert!(!fixture.dest.exists());
+        assert_eq!(fs::read_dir(&fixture.root).unwrap().count(), before);
+    }
+
+    #[test]
+    fn migration_selects_all_scopes_and_views_deduplicates_and_preserves_incoming_tree() {
+        let fixture = Fixture::new("migration-views");
+        fixture.install();
+        fs::write(fixture.dest.join("user-data-測試.txt"), "keep these bytes").unwrap();
+        let before = scan_tree(&fixture.dest, true).unwrap();
+        let mut records = Vec::new();
+        for (index, location) in ["HKCU32", "HKCU64", "HKLM32", "HKLM64"].iter().enumerate() {
+            let cache = fixture.root.join(format!("cached bundle {index}.exe"));
+            fs::write(&cache, "fake cache; never execute").unwrap();
+            let mut record =
+                legacy_record(&cache, if index % 2 == 0 { "1.0.0" } else { "1.2.3.0" });
+            record.location = (*location).into();
+            record.name = Some("gHiDrA lAuNcH".into());
+            record.publisher = Some("RPINZ".into());
+            record.upgrade_codes = vec!["another-family".into(), LEGACY_FAMILY.to_lowercase()];
+            records.push(record.clone());
+            records.push(record);
+        }
+        let mut calls = BTreeSet::new();
+        assert_eq!(
+            migrate_legacy_records(
+                &fixture.dest,
+                "old-owner",
+                [1, 2, 3, 0],
+                &records,
+                |cache, parent| {
+                    assert_eq!(parent, "old-owner");
+                    assert!(calls.insert(cache.to_path_buf()), "duplicate uninstaller");
+                    assert!(!fixture.dest.exists());
+                    let backups = migration_backups(&fixture);
+                    assert_eq!(backups.len(), 1);
+                    assert_eq!(scan_tree(&backups[0], true).unwrap(), before);
+                    // This simulates the old helper's absent-tree removal path,
+                    // including its destination lock and same-owner record clear.
+                    remove(&fixture.dest, None, Some("old-owner")).unwrap();
+                    assert_eq!(fixture.record(), None);
+                    Ok(0)
+                }
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(calls.len(), 4);
+        assert_eq!(scan_tree(&fixture.dest, true).unwrap(), before);
+        assert_eq!(fixture.record().as_deref(), Some("old-owner"));
+        assert!(migration_backups(&fixture).is_empty());
+        DestinationLock::acquire(&fixture.dest).unwrap();
+    }
+
+    #[test]
+    fn migration_preflights_every_genuine_candidate_and_rejects_downgrade_or_bad_cache() {
+        let fixture = Fixture::new("migration-preflight");
+        fixture.install();
+        let cache = fixture.root.join("valid.exe");
+        fs::write(&cache, "fake cache; never execute").unwrap();
+        let valid = legacy_record(&cache, "1.0.0");
+        let mut cases = vec![
+            legacy_record(&cache, "1.2.3.1"),
+            legacy_record(&cache, "invalid"),
+        ];
+        let mut missing_version = valid.clone();
+        missing_version.version = None;
+        cases.push(missing_version);
+        cases.push(legacy_record(&fixture.root.join("missing.exe"), "1.0.0"));
+        cases.push(legacy_record(Path::new("relative.exe"), "1.0.0"));
+        let directory = fixture.root.join("directory.exe");
+        fs::create_dir(&directory).unwrap();
+        cases.push(legacy_record(&directory, "1.0.0"));
+        let mut missing_cache = valid.clone();
+        missing_cache.cache = None;
+        cases.push(missing_cache);
+        let before = scan_tree(&fixture.dest, true).unwrap();
+        for invalid in cases {
+            let expected = if invalid.version.as_deref() == Some("1.2.3.1") {
+                "newer"
+            } else if invalid.version.as_deref() == Some("invalid") || invalid.version.is_none() {
+                "BundleVersion"
+            } else {
+                "BundleCachePath"
+            };
+            let error = migrate_legacy_records(
+                &fixture.dest,
+                "old-owner",
+                [1, 2, 3, 0],
+                &[valid.clone(), invalid],
+                |_, _| panic!("all candidates must pass preflight before any child runs"),
+            )
+            .unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert_eq!(scan_tree(&fixture.dest, true).unwrap(), before);
+            assert!(migration_backups(&fixture).is_empty());
+        }
+    }
+
+    #[test]
+    fn migration_requires_incoming_marker_owner_and_managed_destination() {
+        let fixture = Fixture::new("migration-owner");
+        fixture.install();
+        let cache = fixture.root.join("valid.exe");
+        fs::write(&cache, "fake cache; never execute").unwrap();
+        let records = [legacy_record(&cache, "1.0.0")];
+        let before = scan_tree(&fixture.dest, true).unwrap();
+        let error = migrate_legacy_records(
+            &fixture.dest,
+            "wrong-owner",
+            [1, 0, 0, 0],
+            &records,
+            |_, _| panic!("owner mismatch must not launch"),
+        )
+        .unwrap_err();
+        assert!(error.contains("owner"), "{error}");
+        assert_eq!(scan_tree(&fixture.dest, true).unwrap(), before);
+        fs::remove_file(fixture.dest.join(MARKER_NAME)).unwrap();
+        assert!(migrate_legacy_records(
+            &fixture.dest,
+            "old-owner",
+            [1, 0, 0, 0],
+            &records,
+            |_, _| { panic!("missing marker must not launch") }
+        )
+        .unwrap_err()
+        .contains("marker"));
+        assert!(migrate_legacy_records(
+            &fixture.root.join("not-managed"),
+            "old-owner",
+            [1, 0, 0, 0],
+            &[],
+            |_, _| panic!("unmanaged destination must not launch"),
+        )
+        .unwrap_err()
+        .contains("restricted"));
+        assert!(migration_backups(&fixture).is_empty());
+    }
+
+    #[test]
+    fn migration_restores_payload_after_child_failure_spawn_error_and_reboot() {
+        for outcome in [Ok(3010), Ok(1603), Err("injected spawn failure".to_owned())] {
+            let fixture = Fixture::new("migration-child-result");
+            fixture.install();
+            fs::write(fixture.dest.join("user-modification"), "retain").unwrap();
+            let before = scan_tree(&fixture.dest, true).unwrap();
+            let cache = fixture.root.join("valid.exe");
+            fs::write(&cache, "fake cache; never execute").unwrap();
+            let result = migrate_legacy_records(
+                &fixture.dest,
+                "old-owner",
+                [1, 0, 0, 0],
+                &[legacy_record(&cache, "1.0.0")],
+                |_, parent| {
+                    assert_eq!(parent, "old-owner");
+                    assert!(!fixture.dest.exists());
+                    DestinationLock::acquire(&fixture.dest).unwrap();
+                    outcome.clone()
+                },
+            );
+            match outcome {
+                Ok(3010) => assert_eq!(result.unwrap(), 3010),
+                Ok(1603) => assert!(result.unwrap_err().contains("1603")),
+                Err(error) => assert!(result.unwrap_err().contains(&error)),
+                _ => unreachable!(),
+            }
+            assert_eq!(scan_tree(&fixture.dest, true).unwrap(), before);
+            assert!(migration_backups(&fixture).is_empty());
+        }
+    }
+
+    #[test]
+    fn migration_restore_failure_reports_exact_intact_backup() {
+        for fault in ["legacy-relock", "legacy-restore"] {
+            let fixture = Fixture::new("migration-restore-fault");
+            fixture.install();
+            let before = scan_tree(&fixture.dest, true).unwrap();
+            let cache = fixture.root.join("valid.exe");
+            fs::write(&cache, "fake cache; never execute").unwrap();
+            fixture.inject(fault, 0);
+            let error = migrate_legacy_records(
+                &fixture.dest,
+                "old-owner",
+                [1, 0, 0, 0],
+                &[legacy_record(&cache, "1.0.0")],
+                |_, parent| {
+                    assert_eq!(parent, "old-owner");
+                    Ok(0)
+                },
+            )
+            .unwrap_err();
+            assert!(!fixture.dest.exists());
+            let backups = migration_backups(&fixture);
+            assert_eq!(backups.len(), 1);
+            assert_eq!(scan_tree(&backups[0], true).unwrap(), before);
+            assert!(error.contains(backups[0].to_str().unwrap()), "{error}");
+            assert!(error.contains("intact"), "{error}");
+        }
+    }
+
+    #[test]
+    fn migration_never_overwrites_unexpected_destination_and_retains_child_error() {
+        let fixture = Fixture::new("migration-collision");
+        fixture.install();
+        let before = scan_tree(&fixture.dest, true).unwrap();
+        let cache = fixture.root.join("valid.exe");
+        fs::write(&cache, "fake cache; never execute").unwrap();
+        let error = migrate_legacy_records(
+            &fixture.dest,
+            "old-owner",
+            [1, 0, 0, 0],
+            &[legacy_record(&cache, "1.0.0")],
+            |_, parent| {
+                assert_eq!(parent, "old-owner");
+                assert!(!fixture.dest.exists());
+                fs::create_dir(&fixture.dest).unwrap();
+                fs::write(fixture.dest.join("unexpected"), "do not replace").unwrap();
+                Ok(1603)
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            fs::read(fixture.dest.join("unexpected")).unwrap(),
+            b"do not replace"
+        );
+        let backups = migration_backups(&fixture);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(scan_tree(&backups[0], true).unwrap(), before);
+        assert!(error.contains(backups[0].to_str().unwrap()), "{error}");
+        assert!(error.contains("refusing to overwrite"), "{error}");
+        assert!(error.contains("1603"), "{error}");
+    }
+
+    #[test]
+    fn migration_private_cli_validates_inputs_without_native_access() {
+        for (owner, version) in [
+            ("bad/owner", "1.2.3"),
+            ("valid", "1.2"),
+            ("valid", "01.2.3"),
+            ("valid", "1.2.3.4.5"),
+            ("valid", "1.2.-3"),
+            ("valid", "1.2.4294967296"),
+        ] {
+            assert_eq!(
+                exit_code(&[
+                    "migrate-legacy".into(),
+                    "unused".into(),
+                    owner.into(),
+                    version.into()
+                ]),
+                2
+            );
+        }
+        assert_eq!(
+            parse_release_version("1.2.3"),
+            parse_release_version("1.2.3.0")
+        );
+        assert!(enumerate_legacy_registrations().is_err());
+        assert!(run_legacy_uninstaller(Path::new("never-run.exe"), "incoming-owner").is_err());
+    }
+
+    #[test]
+    fn migration_command_uses_exact_program_and_independent_windows_arguments() {
+        let executable = Path::new(r#"C:\cache with spaces\測試 & bundle.exe"#);
+        let log = Path::new(r#"C:\user logs\quoted " value\legacy.log"#);
+        let owner = "{B62B45B6-22D9-47E3-8EA2-41F5B4271BF9}";
+        let command = legacy_uninstall_command(executable, owner, log);
+        assert_eq!(command.get_program(), executable.as_os_str());
+        let arguments: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            arguments,
+            vec![
+                OsStr::new("/uninstall"),
+                OsStr::new("/quiet"),
+                OsStr::new("/norestart"),
+                OsStr::new("-burn.related.upgrade"),
+                OsStr::new("-parent"),
+                OsStr::new(owner),
+                OsStr::new("/log"),
+                log.as_os_str(),
+            ]
+        );
     }
 
     #[test]

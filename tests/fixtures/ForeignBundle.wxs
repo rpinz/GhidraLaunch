@@ -1,0 +1,13 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="Unrelated bundle fixture" Manufacturer="Ghidra Launch Tests"
+          Version="99.0.0" UpgradeCode="{DFE05126-B29E-4298-A06B-63F833BC0BF8}">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense"
+          LicenseUrl="https://unlicense.org/" SuppressRepair="yes" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage SourceFile="$(var.ForeignMsi)" Compressed="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

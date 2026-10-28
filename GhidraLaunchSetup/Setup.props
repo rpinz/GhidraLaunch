@@ -29,4 +29,14 @@
     <ProjectReference Include="..\GhidraLaunchGhidraHelperC\GhidraLaunchGhidraHelperC.vcxproj" Condition="'$(Stage)' == 'Core' and '$(Variant)' == 'C'" SetPlatform="Platform=x64" />
     <ProjectReference Include="..\GhidraLaunchGhidraHelperRS\GhidraLaunchGhidraHelperRS.vcxproj" Condition="'$(Stage)' == 'Core' and '$(Variant)' == 'Rust'" SetPlatform="Platform=x64" />
   </ItemGroup>
+  <Target Name="SetLegacyMigrationCacheId" BeforeTargets="TrackWixBuildParameters;CoreCompile"
+          Condition="'$(Stage)' == 'Core'">
+    <!-- The same signed helper serves two packages; their cache folders must differ. -->
+    <GetFileHash Files="$(HelperPath)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_LegacyMigrationHelper" />
+    </GetFileHash>
+    <PropertyGroup>
+      <DefineConstants>$(DefineConstants);LegacyMigrationCacheId=GhidraLaunchLegacy$(Variant)-@(_LegacyMigrationHelper->'%(FileHash)')</DefineConstants>
+    </PropertyGroup>
+  </Target>
 </Project>

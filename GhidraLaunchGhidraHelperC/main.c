@@ -2207,14 +2207,14 @@ done:
     return ok;
 }
 
-static HANDLE destination_lock(const wchar_t *dest)
+static HANDLE destination_lock_mode(const wchar_t *dest, BOOL restoring)
 {
     const wchar_t suffix[] = L".ghidralaunch.lock";
     size_t n = wcslen(dest);
     wchar_t *path = NULL, *parent = NULL;
     HANDLE lock = INVALID_HANDLE_VALUE;
     BY_HANDLE_FILE_INFORMATION info;
-    if (!safe_destination(dest))
+    if (!restoring && !safe_destination(dest))
         return INVALID_HANDLE_VALUE;
     parent = parent_path(dest);
     if (!parent || !directories(parent, TRUE))
@@ -2242,6 +2242,507 @@ done:
     return lock;
 }
 
+static HANDLE destination_lock(const wchar_t *dest)
+{
+    return destination_lock_mode(dest, FALSE);
+}
+
+#define LEGACY_UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
+#define LEGACY_FAMILY L"{DFE05126-B29E-4298-A06B-63F833BC0BF8}"
+
+typedef struct {
+    DWORD parts[4];
+} LegacyVersion;
+
+typedef struct {
+    wchar_t *cache;
+    HANDLE pin;
+} LegacyBundle;
+
+typedef struct {
+    LegacyBundle *items;
+    size_t count;
+} LegacyBundles;
+
+static BOOL legacy_version(const wchar_t *text, LegacyVersion *version)
+{
+    unsigned component = 0;
+    const wchar_t *p = text;
+    memset(version, 0, sizeof(*version));
+    if (!p)
+        return FALSE;
+    for (;;) {
+        DWORD number = 0;
+        const wchar_t *start = p;
+        if (*p < L'0' || *p > L'9')
+            return FALSE;
+        do {
+            DWORD digit = (DWORD)(*p++ - L'0');
+            if (number > (MAXDWORD - digit) / 10)
+                return FALSE;
+            number = number * 10 + digit;
+        } while (*p >= L'0' && *p <= L'9');
+        if (p - start > 1 && *start == L'0')
+            return FALSE;
+        version->parts[component++] = number;
+        if (!*p)
+            return component == 3 || component == 4;
+        if (*p++ != L'.' || component == 4)
+            return FALSE;
+    }
+}
+
+static int legacy_compare(const LegacyVersion *a, const LegacyVersion *b)
+{
+    unsigned i;
+    for (i = 0; i < 4; ++i)
+        if (a->parts[i] != b->parts[i])
+            return a->parts[i] > b->parts[i] ? 1 : -1;
+    return 0;
+}
+
+/* Registry identity values are not expanded or interpreted as command lines.
+   Malformed/missing identity is not evidence that an application is ours. */
+static wchar_t *legacy_value(HKEY key, const wchar_t *name, BOOL multi)
+{
+    DWORD type = 0, bytes = 0, actual;
+    wchar_t *text;
+    LSTATUS status = RegQueryValueExW(key, name, NULL, &type, NULL, &bytes);
+    if (status != ERROR_SUCCESS || !bytes || bytes > 1024 * 1024 ||
+        bytes % sizeof(wchar_t) || (type != REG_SZ && !(multi && type == REG_MULTI_SZ)))
+        return NULL;
+    text = allocate((size_t)bytes + sizeof(wchar_t));
+    if (!text)
+        return NULL;
+    actual = bytes;
+    status = RegQueryValueExW(key, name, NULL, &type, (BYTE *)text, &actual);
+    if (status != ERROR_SUCCESS || actual != bytes ||
+        (type != REG_SZ && !(multi && type == REG_MULTI_SZ)) ||
+        text[bytes / sizeof(wchar_t) - 1] ||
+        (type == REG_MULTI_SZ && (bytes < 2 * sizeof(wchar_t) ||
+                                  text[bytes / sizeof(wchar_t) - 2])) ||
+        (type == REG_SZ && wcslen(text) + 1 != bytes / sizeof(wchar_t))) {
+        free(text);
+        return NULL;
+    }
+    text[bytes / sizeof(wchar_t)] = 0;
+    return text;
+}
+
+static BOOL legacy_identity(HKEY key)
+{
+    wchar_t *name = legacy_value(key, L"DisplayName", FALSE);
+    wchar_t *publisher = NULL, *family = NULL;
+    BOOL matches = FALSE;
+    const wchar_t *p;
+    if (!name || _wcsicmp(name, L"Ghidra Launch"))
+        goto done;
+    publisher = legacy_value(key, L"Publisher", FALSE);
+    if (!publisher || _wcsicmp(publisher, L"rpinz"))
+        goto done;
+    family = legacy_value(key, L"BundleUpgradeCode", TRUE);
+    if (family) {
+        for (p = family; *p; p += wcslen(p) + 1) {
+            if (!_wcsicmp(p, LEGACY_FAMILY)) {
+                matches = TRUE;
+                break;
+            }
+        }
+    }
+done:
+    free(family);
+    free(publisher);
+    free(name);
+    return matches;
+}
+
+static void legacy_free(LegacyBundles *bundles)
+{
+    size_t i;
+    for (i = 0; i < bundles->count; ++i) {
+        free(bundles->items[i].cache);
+        if (bundles->items[i].pin != INVALID_HANDLE_VALUE)
+            CloseHandle(bundles->items[i].pin);
+    }
+    free(bundles->items);
+    memset(bundles, 0, sizeof(*bundles));
+}
+
+static BOOL legacy_cache_path(const wchar_t *path)
+{
+    if (!path)
+        return FALSE;
+    if (((path[0] >= L'A' && path[0] <= L'Z') ||
+         (path[0] >= L'a' && path[0] <= L'z')) &&
+        path[1] == L':' && path[2] == L'\\')
+        return valid_relative(path + 3);
+    if (!wcsncmp(path, L"\\\\", 2) && wcsncmp(path, L"\\\\?\\", 4) &&
+        wcsncmp(path, L"\\\\.\\", 4)) {
+        const wchar_t *share = wcschr(path + 2, L'\\');
+        return share && wcschr(share + 1, L'\\') && valid_relative(path + 2);
+    }
+    return FALSE;
+}
+
+static BOOL legacy_select(HKEY key, const wchar_t *registration,
+                          const LegacyVersion *incoming, LegacyBundles *bundles)
+{
+    wchar_t *version_text = NULL, *cache = NULL, *absolute = NULL, *parent = NULL;
+    LegacyVersion version;
+    LegacyBundle *grown;
+    HANDLE pin = INVALID_HANDLE_VALUE;
+    size_t i;
+    BOOL ok = FALSE;
+    if (!legacy_identity(key))
+        return TRUE;
+    version_text = legacy_value(key, L"BundleVersion", FALSE);
+    if (!legacy_version(version_text, &version)) {
+        problem(L"Legacy Ghidra Launch has a missing/invalid BundleVersion; repair its registration",
+                registration);
+        goto done;
+    }
+    if (legacy_compare(&version, incoming) > 0) {
+        problem(L"A newer legacy Ghidra Launch is installed; use an equal/newer release", registration);
+        problem(L"Installed BundleVersion", version_text);
+        goto done;
+    }
+    cache = legacy_value(key, L"BundleCachePath", FALSE);
+    if (!legacy_cache_path(cache)) {
+        problem(L"Legacy Ghidra Launch has a missing/invalid absolute BundleCachePath; repair it",
+                registration);
+        goto done;
+    }
+    absolute = full_path(cache);
+    parent = absolute ? parent_path(absolute) : NULL;
+    if (!parent || !directories(parent, FALSE))
+        goto done;
+    pin = open_input(absolute);
+    if (pin == INVALID_HANDLE_VALUE) {
+        problem(L"Legacy Ghidra Launch cache is unavailable; repair/re-cache its bundle", registration);
+        goto done;
+    }
+    for (i = 0; i < bundles->count; ++i)
+        if (!_wcsicmp(bundles->items[i].cache, cache)) {
+            ok = TRUE;
+            goto done;
+        }
+    if (bundles->count == SIZE_MAX / sizeof(*grown))
+        goto done;
+    grown = realloc(bundles->items, (bundles->count + 1) * sizeof(*grown));
+    if (!grown) {
+        problem(L"Out of memory enumerating legacy Ghidra Launch", registration);
+        goto done;
+    }
+    bundles->items = grown;
+    grown[bundles->count].cache = cache;
+    grown[bundles->count++].pin = pin;
+    cache = NULL;
+    pin = INVALID_HANDLE_VALUE;
+    ok = TRUE;
+done:
+    if (pin != INVALID_HANDLE_VALUE)
+        CloseHandle(pin);
+    free(parent);
+    free(absolute);
+    free(cache);
+    free(version_text);
+    return ok;
+}
+
+static BOOL legacy_enumerate(const LegacyVersion *incoming, LegacyBundles *bundles)
+{
+    const HKEY hives[] = {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    const wchar_t *scopes[] = {L"HKCU", L"HKLM"};
+    const REGSAM views[] = {KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+    unsigned hive, view;
+    for (hive = 0; hive < 2; ++hive) {
+        for (view = 0; view < 2; ++view) {
+            HKEY root;
+            DWORD index;
+            LSTATUS status = RegOpenKeyExW(hives[hive], LEGACY_UNINSTALL_KEY, 0,
+                                          KEY_READ | views[view], &root);
+            if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND)
+                continue;
+            if (status != ERROR_SUCCESS) {
+                SetLastError((DWORD)status);
+                return win_error(L"Opening legacy bundle registrations", scopes[hive]);
+            }
+            for (index = 0;; ++index) {
+                wchar_t name[256], label[512];
+                DWORD length = sizeof(name) / sizeof(name[0]);
+                HKEY key;
+                status = RegEnumKeyExW(root, index, name, &length, NULL, NULL, NULL, NULL);
+                if (status == ERROR_NO_MORE_ITEMS)
+                    break;
+                if (status != ERROR_SUCCESS) {
+                    RegCloseKey(root);
+                    SetLastError((DWORD)status);
+                    return win_error(L"Enumerating legacy bundle registrations", scopes[hive]);
+                }
+                swprintf(label, sizeof(label) / sizeof(label[0]), L"%ls (%u-bit)\\%ls\\%ls",
+                         scopes[hive], view ? 64 : 32, LEGACY_UNINSTALL_KEY, name);
+                status = RegOpenKeyExW(root, name, 0, KEY_QUERY_VALUE | views[view], &key);
+                if (status == ERROR_FILE_NOT_FOUND)
+                    continue;
+                if (status != ERROR_SUCCESS) {
+                    RegCloseKey(root);
+                    SetLastError((DWORD)status);
+                    return win_error(L"Opening legacy bundle registration", label);
+                }
+                if (!legacy_select(key, label, incoming, bundles)) {
+                    RegCloseKey(key);
+                    RegCloseKey(root);
+                    return FALSE;
+                }
+                RegCloseKey(key);
+            }
+            RegCloseKey(root);
+        }
+    }
+    return TRUE;
+}
+
+static wchar_t *legacy_quote(const wchar_t *argument)
+{
+    size_t n = wcslen(argument), i = 0, written = 0;
+    wchar_t *result;
+    if (n > (SIZE_MAX / sizeof(wchar_t) - 3) / 2)
+        return NULL;
+    result = allocate((2 * n + 3) * sizeof(wchar_t));
+    if (!result)
+        return NULL;
+    result[written++] = L'"';
+    while (i < n) {
+        size_t slashes = 0;
+        while (argument[i] == L'\\') {
+            ++slashes;
+            ++i;
+        }
+        if (!argument[i] || argument[i] == L'"')
+            slashes *= 2;
+        while (slashes--)
+            result[written++] = L'\\';
+        if (argument[i] == L'"')
+            result[written++] = L'\\';
+        if (argument[i])
+            result[written++] = argument[i++];
+    }
+    result[written++] = L'"';
+    result[written] = 0;
+    return result;
+}
+
+static wchar_t *legacy_log(void)
+{
+    wchar_t temp[32768], name[50], *root = NULL, *path = NULL;
+    HANDLE file;
+    unsigned attempt;
+#ifdef HELPER_TEST_LEGACY_LOG_ROOT
+    const wchar_t *test_root = HELPER_TEST_LEGACY_LOG_ROOT();
+    if (!test_root || !*test_root)
+        return NULL;
+    root = copy_n(test_root, wcslen(test_root));
+#else
+    DWORD length = GetTempPathW(sizeof(temp) / sizeof(temp[0]), temp);
+    if (!length || length >= sizeof(temp) / sizeof(temp[0])) {
+        win_error(L"Finding legacy uninstaller log directory", L"");
+        return NULL;
+    }
+    root = full_path(temp);
+#endif
+    (void)temp;
+    if (!root || !directories(root, FALSE))
+        goto done;
+    for (attempt = 0; attempt < 32; ++attempt) {
+        if (!random_name(name, L".legacy-log-"))
+            break;
+        wcscat(name, L".log");
+        path = join(root, name);
+        if (!path)
+            break;
+        file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_NEW,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        if (file != INVALID_HANDLE_VALUE) {
+            CloseHandle(file);
+            break;
+        }
+        if (GetLastError() != ERROR_FILE_EXISTS) {
+            win_error(L"Reserving legacy uninstaller log", path);
+            free(path);
+            path = NULL;
+            break;
+        }
+        free(path);
+        path = NULL;
+    }
+done:
+    free(root);
+    return path;
+}
+
+static BOOL legacy_execute(const wchar_t *cache, wchar_t *command, HANDLE *pin, DWORD *exit_code)
+{
+#ifdef HELPER_TEST_LEGACY_PROCESS
+    CloseHandle(*pin);
+    *pin = INVALID_HANDLE_VALUE;
+    return HELPER_TEST_LEGACY_PROCESS(cache, command, exit_code);
+#else
+    STARTUPINFOW startup = {0};
+    PROCESS_INFORMATION process = {0};
+    BOOL ok;
+    startup.cb = sizeof(startup);
+    if (!CreateProcessW(cache, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process))
+        return win_error(L"Launching cached legacy Ghidra Launch uninstaller", cache);
+    /* Keep the preflighted image pinned until CreateProcess opens it, but let
+       Burn remove its own cached executable while uninstalling. */
+    CloseHandle(*pin);
+    *pin = INVALID_HANDLE_VALUE;
+    CloseHandle(process.hThread);
+    ok = WaitForSingleObject(process.hProcess, INFINITE) == WAIT_OBJECT_0 &&
+         GetExitCodeProcess(process.hProcess, exit_code);
+    if (!ok)
+        win_error(L"Waiting for legacy Ghidra Launch uninstaller", cache);
+    CloseHandle(process.hProcess);
+    return ok;
+#endif
+}
+
+static BOOL legacy_uninstall(LegacyBundle *bundle, const char *owner, DWORD *exit_code)
+{
+    /* Keep package dependency checks enabled: the incoming Core may own the
+       same MSI. Related-upgrade mode bypasses only bundle-level blocking. */
+    const wchar_t arguments[] = L" /uninstall /quiet /norestart -burn.related.upgrade -parent ";
+    const wchar_t *cache = bundle->cache;
+    wchar_t parent[129];
+    wchar_t *log = legacy_log(), *quoted_cache = NULL, *quoted_log = NULL, *command = NULL;
+    wchar_t *quoted_parent = NULL;
+    size_t count;
+    BOOL ok = FALSE;
+    if (!log)
+        goto done;
+    quoted_cache = legacy_quote(cache);
+    quoted_log = legacy_quote(log);
+    widen_owner(owner, parent);
+    quoted_parent = legacy_quote(parent);
+    if (!quoted_cache || !quoted_log || !quoted_parent)
+        goto done;
+    count = wcslen(quoted_cache) + wcslen(arguments) + wcslen(quoted_parent) +
+            wcslen(L" /log ") + wcslen(quoted_log) + 1;
+    command = allocate(count * sizeof(wchar_t));
+    if (!command)
+        goto done;
+    swprintf(command, count, L"%ls%ls%ls /log %ls", quoted_cache, arguments, quoted_parent, quoted_log);
+    wprintf(L"Removing legacy Ghidra Launch: %ls (log: %ls)\n", cache, log);
+    if (!legacy_execute(cache, command, &bundle->pin, exit_code))
+        goto done;
+    ok = *exit_code == 0 || *exit_code == 3010;
+    if (!ok)
+        fwprintf(stderr, L"Legacy Ghidra Launch uninstall failed (exit %lu): %ls; log: %ls\n",
+                 (unsigned long)*exit_code, cache, log);
+done:
+    free(command);
+    free(quoted_parent);
+    free(quoted_log);
+    free(quoted_cache);
+    free(log);
+    return ok;
+}
+
+static int migrate_legacy(const wchar_t *dest, const char *owner, const LegacyVersion *incoming)
+{
+    LegacyBundles bundles = {0};
+    Marker marker;
+    HANDLE lock = INVALID_HANDLE_VALUE;
+    wchar_t *parent = NULL, *backup = NULL;
+    BOOL moved = FALSE, ok = FALSE, reboot = FALSE;
+    size_t i;
+    DWORD attr;
+#ifdef HELPER_TEST_LEGACY_ALLOWED
+    if (!HELPER_TEST_LEGACY_ALLOWED(dest)) {
+        problem(L"Test migration requires an isolated selftest fixture", dest);
+        return 1;
+    }
+#endif
+    if (!manages_owner_record(dest)) {
+        problem(L"Legacy migration is restricted to LOCALAPPDATA\\Ghidra Launch\\Ghidra", dest);
+        goto done;
+    }
+    if (!legacy_enumerate(incoming, &bundles))
+        goto done;
+    if (!bundles.count) {
+        ok = TRUE;
+        goto done;
+    }
+    lock = destination_lock(dest);
+    if (lock == INVALID_HANDLE_VALUE)
+        goto done;
+    if (read_marker(dest, &marker) != 1 || strcmp(marker.owner, owner)) {
+        problem(L"Legacy migration requires the current payload marker to match the incoming owner", dest);
+        goto done;
+    }
+    parent = parent_path(dest);
+    backup = parent ? new_directory(parent, L".legacy-") : NULL;
+    if (!backup)
+        goto done;
+    if (!RemoveDirectoryW(backup)) {
+        win_error(L"Preparing legacy payload preservation name (original left intact)", backup);
+        goto done;
+    }
+    if (!MoveFileExW(dest, backup, MOVEFILE_WRITE_THROUGH)) {
+        win_error(L"Preserving current payload for legacy migration (original left intact)", dest);
+        goto done;
+    }
+    moved = TRUE;
+    CloseHandle(lock);
+    lock = INVALID_HANDLE_VALUE;
+    ok = TRUE;
+    for (i = 0; i < bundles.count; ++i) {
+        DWORD exit_code = 0;
+        attr = GetFileAttributesW(dest);
+        if (attr != INVALID_FILE_ATTRIBUTES || !absent(GetLastError())) {
+            problem(L"Legacy migration stopped: an unexpected destination appeared", dest);
+            ok = FALSE;
+            break;
+        }
+        if (!legacy_uninstall(&bundles.items[i], owner, &exit_code)) {
+            ok = FALSE;
+            break;
+        }
+        reboot = reboot || exit_code == 3010;
+    }
+done:
+    if (moved) {
+        /* Old helpers must be able to lock the absent destination. Conversely,
+           restoration must not run unlocked, even if a child failed. */
+        lock = destination_lock_mode(dest, TRUE);
+        if (lock == INVALID_HANDLE_VALUE) {
+            ok = FALSE;
+        } else {
+            attr = GetFileAttributesW(dest);
+            if (attr != INVALID_FILE_ATTRIBUTES || !absent(GetLastError())) {
+                problem(L"Refusing to overwrite an unexpected destination during legacy restoration", dest);
+                ok = FALSE;
+            } else if (!safe_destination(backup) ||
+                       !MoveFileExW(backup, dest, MOVEFILE_WRITE_THROUGH)) {
+                win_error(L"Restoring current payload after legacy migration", dest);
+                ok = FALSE;
+            } else {
+                moved = FALSE;
+                if (!set_owner_record(dest, owner))
+                    ok = FALSE;
+            }
+        }
+        if (moved)
+            problem(L"LEGACY RESTORATION FAILED; complete current payload remains intact at", backup);
+    }
+    if (lock != INVALID_HANDLE_VALUE)
+        CloseHandle(lock);
+    legacy_free(&bundles);
+    free(backup);
+    free(parent);
+    return ok ? (reboot ? 3010 : 0) : 1;
+}
+
 int wmain(int argc, wchar_t **argv)
 {
     BOOL extracting, removing, ok;
@@ -2249,6 +2750,23 @@ int wmain(int argc, wchar_t **argv)
     const char *owner_arg = NULL;
     wchar_t *dest, *zip = NULL;
     HANDLE lock;
+    if (argc >= 2 && !_wcsicmp(argv[1], L"migrate-legacy")) {
+        LegacyVersion incoming;
+        int result;
+        if (argc != 5)
+            goto usage;
+        if (!parse_owner(argv[3], owner) || !legacy_version(argv[4], &incoming)) {
+            problem(L"Migration requires a valid owner and normalized numeric version (3 or 4 components)",
+                    argv[3]);
+            return 2;
+        }
+        dest = full_path(argv[2]);
+        if (!dest)
+            return 1;
+        result = migrate_legacy(dest, owner, &incoming);
+        free(dest);
+        return result;
+    }
     extracting = argc >= 2 && !_wcsicmp(argv[1], L"extract");
     removing = argc >= 2 && !_wcsicmp(argv[1], L"remove");
     if ((!extracting && !removing) || (extracting && argc != 4 && argc != 5) ||
@@ -2282,6 +2800,7 @@ int wmain(int argc, wchar_t **argv)
 usage:
     fwprintf(stderr, L"Usage: GhidraLaunchGhidraHelperC extract <zip> <dest> [owner]\n"
                      L"       GhidraLaunchGhidraHelperC remove <dest> [zip] [owner]\n"
+                     L"       GhidraLaunchGhidraHelperC migrate-legacy <dest> <owner> <releaseVersion>\n"
                      L"Use an empty zip argument to remove by owner alone.\n");
     return 2;
 }
